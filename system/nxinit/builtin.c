@@ -1,0 +1,287 @@
+/****************************************************************************
+ * apps/system/nxinit/builtin.c
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.  The
+ * ASF licenses this file to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance with the
+ * License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ *
+ ****************************************************************************/
+
+/****************************************************************************
+ * Included Files
+ ****************************************************************************/
+
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+#include <spawn.h>
+#include <sys/param.h>
+#include <sys/wait.h>
+
+#include "builtin.h"
+#include "init.h"
+#include "property.h"
+#include "service.h"
+
+/****************************************************************************
+ * Private Types
+ ****************************************************************************/
+
+struct cmd_map_s
+{
+  FAR const char *cmd;
+  uint8_t minargs;
+  uint8_t maxargs;
+  CODE int (*func)(FAR struct action_manager_s *, int, FAR char **);
+};
+
+/****************************************************************************
+ * Private Function Prototypes
+ ****************************************************************************/
+
+static int cmd_trigger(FAR struct action_manager_s *am,
+                       int argc, FAR char **argv);
+static int cmd_exec_start(FAR struct action_manager_s *am,
+                          int argc, FAR char **argv);
+static int cmd_start(FAR struct action_manager_s *am,
+                     int argc, FAR char **argv);
+static int cmd_stop(FAR struct action_manager_s *am,
+                    int argc, FAR char **argv);
+#if CONFIG_SYSTEM_NXINIT_ACTION_EVENTS_MAX > 1
+static int cmd_setprop(FAR struct action_manager_s *am,
+                       int argc, FAR char **argv);
+#endif
+static int cmd_exec(FAR struct action_manager_s *am,
+                    int argc, FAR char **argv);
+static int cmd_class_start(FAR struct action_manager_s *am,
+                           int argc, FAR char **argv);
+static int cmd_class_stop(FAR struct action_manager_s *am,
+                          int argc, FAR char **argv);
+
+/****************************************************************************
+ * Private Data
+ ****************************************************************************/
+
+static const struct cmd_map_s g_builtin[] =
+{
+  {"class_start", 2, 2, cmd_class_start},
+  {"class_stop", 2, 2, cmd_class_stop},
+  {"exec", 3, 99, cmd_exec},
+  {"exec_start", 2, 2, cmd_exec_start},
+#if CONFIG_SYSTEM_NXINIT_ACTION_EVENTS_MAX > 1
+  {"setprop", 3, 3, cmd_setprop},
+#endif
+  {"start", 2, 2, cmd_start},
+  {"stop", 2, 2, cmd_stop},
+  {"trigger", 2, 2, cmd_trigger},
+};
+
+/****************************************************************************
+ * Private Functions
+ ****************************************************************************/
+
+static int cmd_class_start(FAR struct action_manager_s *am,
+                           int argc, FAR char **argv)
+{
+  return init_service_start_by_class(am->sm, argv[1]);
+}
+
+static int cmd_class_stop(FAR struct action_manager_s *am,
+                          int argc, FAR char **argv)
+{
+  return init_service_stop_by_class(am->sm, argv[1]);
+}
+
+static int cmd_exec_start(FAR struct action_manager_s *am,
+                          int argc, FAR char **argv)
+{
+  FAR struct service_s *service;
+
+  service = init_service_find_by_name(am->sm, argv[1]);
+  if (service == NULL)
+    {
+      init_err("No such service '%s'", argv[1]);
+      return -EINVAL;
+    }
+
+  return init_service_start(service);
+}
+
+static int cmd_start(FAR struct action_manager_s *am,
+                     int argc, FAR char **argv)
+{
+  int ret;
+
+  ret = cmd_exec_start(am, argc, argv);
+  return ret < 0 ? ret : 0;
+}
+
+static int cmd_stop(FAR struct action_manager_s *am,
+                    int argc, FAR char **argv)
+{
+  FAR struct service_s *service;
+
+  service = init_service_find_by_name(am->sm, argv[1]);
+  if (service == NULL)
+    {
+      init_err("No such service '%s'", argv[1]);
+      return -EINVAL;
+    }
+
+  return init_service_stop(service);
+}
+
+#if CONFIG_SYSTEM_NXINIT_ACTION_EVENTS_MAX > 1
+static int cmd_setprop(FAR struct action_manager_s *am, int argc,
+                       FAR char **argv)
+{
+  return init_property_set(am->prop, argv[1], argv[2]);
+}
+#endif
+
+static int cmd_trigger(FAR struct action_manager_s *am,
+                       int argc, FAR char **argv)
+{
+  return init_action_add_event(am, argv[1]);
+}
+
+static int cmd_exec(FAR struct action_manager_s *am,
+                    int argc, FAR char **argv)
+{
+  int i;
+
+  for (i = 0; i < argc; i++)
+    {
+      if (!strcmp(argv[i], "--"))
+        {
+          i++;
+          return init_builtin_run(am, argc - i, &argv[i]);
+        }
+    }
+
+  return -EINVAL;
+}
+
+/****************************************************************************
+ * Public Functions
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: init_builtin_run
+ *
+ * Description:
+ *   Execute the builtin command of NxInit, builtin App, or NSH builtin.
+ *
+ * Input Parameters:
+ *   am   - Instance of Action Manager.
+ *   argc - Argument count.
+ *   argv - A pointer to an array of string arguments. The end of the array
+ *          is indicated with a NULL entry.
+ *
+ * Returned Value:
+ *   Returns 0 (for NxInit builtin) or a PID (for builtin App or NSH builtin)
+ *   on success; Returns the negative value of errno on failure.
+ ****************************************************************************/
+
+int init_builtin_run(FAR struct action_manager_s *am,
+                     int argc, FAR char **argv)
+{
+  char cmd[CONFIG_SYSTEM_NXINIT_RC_LINE_MAX];
+  posix_spawnattr_t attr;
+  FAR char *args[4];
+  sigset_t mask;
+  pid_t pid;
+  size_t i;
+  int ret;
+
+  for (i = 0; i < nitems(g_builtin); i++)
+    {
+      if (!strcmp(g_builtin[i].cmd, argv[0]))
+        {
+          if (argc < g_builtin[i].minargs || argc > g_builtin[i].maxargs)
+            {
+              init_err("Executing command '%s': invalid argument", argv[0]);
+              init_dump_args(argc, argv);
+              return -EINVAL;
+            }
+
+          init_info("Executing command '%s'", argv[0]);
+          return g_builtin[i].func(am, argc, argv);
+        }
+    }
+
+  ret = posix_spawnattr_init(&attr);
+  if (ret != 0)
+    {
+      init_err("posix_spawnattr_init %d", ret);
+      return -ret;
+    }
+
+  ret = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK);
+  if (ret != 0)
+    {
+      init_err("posix_spawnattr_setflags %d", ret);
+      posix_spawnattr_destroy(&attr);
+      return -ret;
+    }
+
+  sigemptyset(&mask);
+  ret = posix_spawnattr_setsigmask(&attr, &mask);
+  if (ret != 0)
+    {
+      init_err("posix_spawnattr_setsigmask %d", ret);
+      posix_spawnattr_destroy(&attr);
+      return -ret;
+    }
+
+  for (i = 0, cmd[i] = '\0'; i < argc; i++)
+    {
+      strlcat(cmd, argv[i], sizeof(cmd));
+      if (i < argc - 1)
+        {
+          strcat(cmd, " ");
+        }
+    }
+
+  for (; ; )
+    {
+      ret = posix_spawnp(&pid, argv[0], NULL, &attr, argv, NULL);
+      if (ret == 0)
+        {
+          init_debug("executed command '%s' pid %d", cmd, pid);
+          break;
+        }
+
+      if (!strcmp("sh", argv[0]))
+        {
+          init_err("executing command '%s': %d", cmd, ret);
+          init_dump_args(argc, argv);
+          pid = -ret;
+          break;
+        }
+
+      init_debug("command '%s': %d", argv[0], ret);
+      args[0] = "sh";
+      args[1] = "-c";
+      args[2] = cmd;
+      args[3] = NULL;
+      argc = nitems(args) - 1;
+      argv = args;
+    }
+
+  posix_spawnattr_destroy(&attr);
+  return pid;
+}

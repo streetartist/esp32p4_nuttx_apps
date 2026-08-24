@@ -1,0 +1,135 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config TESTING_ARCH_LIBC
+	tristate "arch-specific libc function test"
+	default n
+	---help---
+		Enable the arch libc test
+
+if TESTING_ARCH_LIBC
+
+config TESTING_ARCH_LIBC_MEMCHR
+	bool "test memchr"
+	default y
+
+config TESTING_ARCH_LIBC_MEMCMP
+	bool "test memcmp"
+	default y
+
+config TESTING_ARCH_LIBC_MEMCPY
+	bool "test memcpy"
+	default y
+
+config TESTING_ARCH_LIBC_MEMMOVE
+	bool "test memmove"
+	default y
+
+config TESTING_ARCH_LIBC_MEMSET
+	bool "test memset"
+	default y
+
+config TESTING_ARCH_LIBC_STRCHR
+	bool "test strchr"
+	default y
+
+config TESTING_ARCH_LIBC_STRCMP
+	bool "test strcmp"
+	default y
+
+config TESTING_ARCH_LIBC_STRCPY
+	bool "test strcpy"
+	default y
+
+config TESTING_ARCH_LIBC_MEMCCPY
+	bool "test memccpy"
+	default y
+
+config TESTING_ARCH_LIBC_STPNCPY
+	bool "test stpncpy"
+	default y
+
+config TESTING_ARCH_LIBC_STRLCPY
+	bool "test strlcpy"
+	default y
+
+config TESTING_ARCH_LIBC_STRLEN
+	bool "test strlen"
+	default y
+
+config TESTING_ARCH_LIBC_STRNCMP
+	bool "test strncmp"
+	default y
+
+config TESTING_ARCH_LIBC_STRNLEN
+	bool "test strnlen"
+	default y
+
+config TESTING_ARCH_LIBC_STRNCPY
+	bool "test strncpy"
+	default y
+
+config TESTING_ARCH_LIBC_STPCPY
+	bool "test stpcpy"
+	default y
+
+config TESTING_ARCH_LIBC_STRCAT
+	bool "test strcat"
+	default y
+
+config TESTING_ARCH_LIBC_STRRCHR
+	bool "test strrchr"
+	default y
+
+config TESTING_ARCH_LIBC_STRCHRNUL
+	bool "test strchrnul"
+	default y
+
+config TESTING_ARCH_LIBC_BENCH
+	bool "throughput benchmark"
+	default n
+	---help---
+		Measure each function across a size sweep and every source and
+		destination alignment pair, reporting MB/s and cycles per byte.
+		An implementation usually takes its wide path only when the
+		pointers meet some alignment condition, so an aligned measurement
+		alone does not show what the rest of the input space costs.
+
+if TESTING_ARCH_LIBC_BENCH
+
+config TESTING_ARCH_LIBC_BENCH_BUFSIZE
+	int "benchmark buffer size"
+	default 262144
+	---help---
+		Size of each of the two buffers the benchmark allocates.
+
+config TESTING_ARCH_LIBC_BENCH_MINMS
+	int "minimum milliseconds per measurement"
+	default 250
+	---help---
+		Each measurement repeats until it has run for at least this long.
+
+endif
+
+config TESTING_ARCH_LIBC_PROGNAME
+	string "Program name"
+	default "arch_libctest"
+	---help---
+		This is the name of the program that will be used when the NSH ELF
+		program is installed.
+
+config TESTING_ARCH_LIBC_PRIORITY
+	int "arch libc test priority"
+	default 100
+
+config TESTING_ARCH_LIBC_STACKSIZE
+	int "arch libc test stack size"
+	default DEFAULT_TASK_STACKSIZE
+
+config TESTING_ARCH_LIBC_VERBOSE
+	bool "Verbose output"
+	default n
+
+endif

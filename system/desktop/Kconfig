@@ -1,0 +1,33 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+menuconfig SYSTEM_DESKTOP
+	tristate "NuttX touch desktop launcher"
+	default n
+	depends on GRAPHICS_LVGL
+	---help---
+		Touch desktop launcher for framebuffer-based NuttX boards.
+		Shows a status bar and an application grid, and lists quick apps
+		found under /data/qpk.
+
+if SYSTEM_DESKTOP
+
+config SYSTEM_DESKTOP_PROGNAME
+	string "Program name"
+	default "desktop"
+
+config SYSTEM_DESKTOP_PRIORITY
+	int "Desktop task priority"
+	default 100
+
+config SYSTEM_DESKTOP_STACKSIZE
+	int "Desktop stack size"
+	default 32768
+
+config SYSTEM_DESKTOP_QPK_DIR
+	string "Quick app directory"
+	default "/data/qpk"
+
+endif

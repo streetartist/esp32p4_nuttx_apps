@@ -1,0 +1,28 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config VIDEOUTILS_LIBX264
+	bool "x264 library"
+	default n
+
+if VIDEOUTILS_LIBX264
+
+config UTILS_X264
+	tristate "x264 cmd"
+	default n
+
+if UTILS_X264
+
+config UTILS_X264_PRIORITY
+	int "task priority"
+	default 100
+
+config UTILS_X264_STACKSIZE
+	int "stack size"
+	default 51200
+
+endif # UTILS_X264
+
+endif # VIDEOUTILS_LIBX264

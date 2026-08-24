@@ -1,0 +1,10 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config MLEARNING_CMSIS_NN
+	bool "CMSIS_NN Library"
+	default n
+	---help---
+		Enable CMSIS_NN.
