@@ -27,6 +27,7 @@
 #define NAME_MAXLEN   48
 #define PANEL_WIDTH   760
 #define PANEL_HEIGHT  470
+#define QAPP_HEADER_HEIGHT  64
 
 extern const uint8_t g_desktop_font_start[];
 extern const uint8_t g_desktop_font_end[];
@@ -38,6 +39,30 @@ struct qpk_entry_s
   char package[NAME_MAXLEN];
   char version[24];
   char entry[64];
+};
+
+struct builtin_qpk_s
+{
+  struct qpk_entry_s manifest;
+  const char *kind;
+  const char *format;
+};
+
+/* Built-in QPK metadata.  The manifest name is used consistently by the
+ * launcher list, the full-screen title bar, and app.getInfo().
+ */
+
+static const struct builtin_qpk_s g_builtin_qpk =
+{
+  .manifest =
+    {
+      .name = "你好快应用",
+      .package = "com.example.hello",
+      .version = "1.0.2",
+      .entry = "builtin:/hello/app.js",
+    },
+  .kind = "内置示例",
+  .format = "QPK 1.0",
 };
 
 struct desktop_env_s
@@ -57,7 +82,6 @@ struct desktop_env_s
   struct qpk_entry_s qpk[MAX_QPK];
   int nqpk;
   bool light_theme;
-  bool animations;
 };
 
 static struct desktop_env_s g_desktop;
@@ -264,6 +288,7 @@ static void panel_hide(lv_event_t *e)
   LV_UNUSED(e);
   qpk_runtime_stop();
   lv_obj_add_flag(g_desktop.panel, LV_OBJ_FLAG_HIDDEN);
+  g_desktop.current_card = NULL;
 }
 
 static lv_obj_t *panel_card(const char *title)
@@ -275,6 +300,9 @@ static lv_obj_t *panel_card(const char *title)
   qpk_runtime_stop();
   lv_obj_remove_flag(g_desktop.panel, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clean(g_desktop.panel);
+  lv_obj_set_style_bg_color(g_desktop.panel, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(g_desktop.panel, LV_OPA_70, 0);
+  lv_obj_set_style_pad_all(g_desktop.panel, 0, 0);
 
   card = lv_obj_create(g_desktop.panel);
   g_desktop.current_card = card;
@@ -335,16 +363,16 @@ static const char g_hello_qpk_js[] =
   "'use strict';\n"
   "const info = app.getInfo();\n"
   "ui.text(info.packageName + '  v' + info.versionName, 24, 60, 16, ui.secondary);\n"
-  "ui.text(info.name, 320, 105, 28, ui.primary);\n"
-  "ui.button('Toast 提示', 220, 164, 300, 54, () => {\n"
+  "ui.text(info.name, 472, 92, 28, ui.primary);\n"
+  "ui.button('Toast 提示', 362, 150, 300, 54, () => {\n"
   "  prompt.showToast({message: '来自真正 QuickJS QPK 的问候'});\n"
   "}, 0x6677f5);\n"
-  "ui.button('对话框', 220, 232, 300, 54, () => {\n"
+  "ui.button('对话框', 362, 218, 300, 54, () => {\n"
   "  prompt.dialog({title: 'QPK 运行时',\n"
   "    message: '界面由 JavaScript 创建，事件由 QuickJS 执行。'});\n"
   "}, ui.surface);\n"
   "let secs = 0;\n"
-  "const tick = ui.text('已运行 0 秒', 320, 352, 16, ui.secondary);\n"
+  "const tick = ui.text('已运行 0 秒', 456, 338, 16, ui.secondary);\n"
   "setInterval(() => { secs++; ui.setText(tick, '已运行 ' + secs + ' 秒'); }, 1000);\n"
   "console.log('hello QPK initialized');\n";
 
@@ -438,14 +466,78 @@ static char *qpk_load_entry(const struct qpk_entry_s *qpk,
   return NULL;
 }
 
+static void qpk_clicked(lv_event_t *e);
+
+static void qapp_back(lv_event_t *e)
+{
+  LV_UNUSED(e);
+  qpk_runtime_stop();
+  qpk_clicked(NULL);
+}
+
+static lv_obj_t *qapp_page(const char *title)
+{
+  lv_obj_t *page;
+  lv_obj_t *content;
+  lv_obj_t *back;
+  lv_obj_t *label;
+  int height;
+
+  qpk_runtime_stop();
+  lv_obj_remove_flag(g_desktop.panel, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clean(g_desktop.panel);
+  lv_obj_set_style_bg_color(g_desktop.panel,
+                            lv_color_hex(theme_card()), 0);
+  lv_obj_set_style_bg_opa(g_desktop.panel, LV_OPA_COVER, 0);
+  lv_obj_set_style_pad_all(g_desktop.panel, 0, 0);
+
+  page = lv_obj_create(g_desktop.panel);
+  g_desktop.current_card = page;
+  lv_obj_set_size(page, lv_pct(100), lv_pct(100));
+  lv_obj_set_style_bg_color(page, lv_color_hex(theme_card()), 0);
+  lv_obj_set_style_border_width(page, 0, 0);
+  lv_obj_set_style_radius(page, 0, 0);
+  lv_obj_set_style_pad_all(page, 0, 0);
+  lv_obj_remove_flag(page, LV_OBJ_FLAG_SCROLLABLE);
+
+  back = lv_button_create(page);
+  lv_obj_set_size(back, 52, 42);
+  lv_obj_set_pos(back, 12, 10);
+  lv_obj_set_style_bg_color(back, lv_color_hex(theme_surface()), 0);
+  lv_obj_set_style_radius(back, 12, 0);
+  lv_obj_add_event_cb(back, qapp_back, LV_EVENT_CLICKED, NULL);
+  label = lv_label_create(back);
+  lv_label_set_text(label, LV_SYMBOL_LEFT);
+  lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
+  lv_obj_set_style_text_color(label, lv_color_hex(theme_primary()), 0);
+  lv_obj_center(label);
+
+  label = make_label(page, title, theme_primary(), 28);
+  lv_obj_set_pos(label, 78, 15);
+
+  content = lv_obj_create(page);
+  lv_obj_update_layout(page);
+  height = lv_obj_get_height(page) - QAPP_HEADER_HEIGHT;
+  lv_obj_set_size(content, lv_pct(100), height);
+  lv_obj_align(content, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(content, 0, 0);
+  lv_obj_set_style_radius(content, 0, 0);
+  lv_obj_set_style_pad_all(content, 0, 0);
+  lv_obj_remove_flag(content, LV_OBJ_FLAG_SCROLLABLE);
+
+  return content;
+}
+
 static void launch_builtin_qapp(lv_event_t *e)
 {
   lv_obj_t *card;
+  const struct qpk_entry_s *manifest = &g_builtin_qpk.manifest;
 
   LV_UNUSED(e);
-  card = panel_card("你好快应用");
-  qpk_runtime_launch(card, "Hello", "com.example.hello", "1.0.2",
-                     "builtin:/hello/app.js", g_hello_qpk_js,
+  card = qapp_page(manifest->name);
+  qpk_runtime_launch(card, manifest->name, manifest->package,
+                     manifest->version, manifest->entry, g_hello_qpk_js,
                      sizeof(g_hello_qpk_js) - 1, zh_font, show_toast,
                      qpk_show_dialog);
 }
@@ -467,7 +559,7 @@ static void external_qapp_clicked(lv_event_t *e)
     }
 
   qpk = &g_desktop.qpk[index];
-  card = panel_card(qpk->name);
+  card = qapp_page(qpk->name);
   source = qpk_load_entry(qpk, filename, sizeof(filename), &source_size);
   if (source != NULL)
     {
@@ -517,12 +609,15 @@ static lv_obj_t *list_button(lv_obj_t *parent, const char *title,
 static void qpk_clicked(lv_event_t *e)
 {
   lv_obj_t *card;
+  char builtin_subtitle[96];
   int i;
 
   LV_UNUSED(e);
   qpk_scan();
   card = panel_card("快应用");
-  list_button(card, "你好快应用", "内置示例 · QPK 1.0", 72,
+  snprintf(builtin_subtitle, sizeof(builtin_subtitle), "%s · %s",
+           g_builtin_qpk.kind, g_builtin_qpk.format);
+  list_button(card, g_builtin_qpk.manifest.name, builtin_subtitle, 72,
               launch_builtin_qapp, NULL);
 
   for (i = 0; i < g_desktop.nqpk && i < 4; i++)
@@ -564,13 +659,6 @@ static void theme_changed(lv_event_t *e)
   lv_async_call(settings_rebuild_async, NULL);
 }
 
-static void animations_changed(lv_event_t *e)
-{
-  lv_obj_t *sw = lv_event_get_target(e);
-
-  g_desktop.animations = lv_obj_has_state(sw, LV_STATE_CHECKED);
-}
-
 static void setting_row(lv_obj_t *parent, const char *title,
                         const char *subtitle, int y, bool checked,
                         lv_event_cb_t cb)
@@ -603,8 +691,6 @@ static void settings_clicked(lv_event_t *e)
   card = panel_card("设置");
   setting_row(card, "浅色桌面", "切换桌面背景与应用卡片", 82,
               g_desktop.light_theme, theme_changed);
-  setting_row(card, "界面动画", "控制后续页面切换动画", 164,
-              g_desktop.animations, animations_changed);
 
   snprintf(info, sizeof(info),
            "设备信息\nESP32-P4 Function-EV-Board\n"
@@ -612,7 +698,7 @@ static void settings_clicked(lv_event_t *e)
            "NuttX 桌面 · 已发现 %d 个外部 QPK",
            g_desktop.nqpk);
   label = make_label(card, info, theme_secondary(), 16);
-  lv_obj_set_pos(label, 28, 264);
+  lv_obj_set_pos(label, 28, 190);
 }
 
 static void about_clicked(lv_event_t *e)
@@ -627,6 +713,7 @@ static void about_clicked(lv_event_t *e)
   card = panel_card("关于");
   snprintf(text, sizeof(text),
            "ESP32-P4 中文触摸桌面\n\n"
+           "作者：电子科技大学 闻家贤\n\n"
            "系统：Apache NuttX RTOS\n"
            "处理器：双核 RISC-V\n"
            "内存：内部 RAM + PSRAM\n"
@@ -723,7 +810,6 @@ static void desktop_ui_create(void)
   size_t font_size = (size_t)(g_desktop_font_end - g_desktop_font_start);
 
   memset(&g_desktop, 0, sizeof(g_desktop));
-  g_desktop.animations = true;
   g_desktop.font16 = lv_tiny_ttf_create_data(g_desktop_font_start,
                                               font_size, 16);
   g_desktop.font20 = lv_tiny_ttf_create_data(g_desktop_font_start,
