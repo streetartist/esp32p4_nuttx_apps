@@ -9,13 +9,10 @@
 #include <nuttx/config.h>
 
 #include <dirent.h>
-#include <errno.h>
-#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -64,79 +61,6 @@ struct desktop_env_s
 };
 
 static struct desktop_env_s g_desktop;
-
-#if defined(CONFIG_SYSTEM_NSH) && defined(CONFIG_ESPRESSIF_USBSERIAL)
-extern int nsh_main(int argc, FAR char *argv[]);
-extern bool esp_usbserial_connected(void);
-
-static void desktop_null_stdio(void)
-{
-  int fd = open("/dev/null", O_RDWR);
-
-  if (fd >= 0)
-    {
-      dup2(fd, STDIN_FILENO);
-      dup2(fd, STDOUT_FILENO);
-      dup2(fd, STDERR_FILENO);
-      if (fd > STDERR_FILENO)
-        {
-          close(fd);
-        }
-    }
-}
-
-static int desktop_nsh_supervisor(int argc, FAR char *argv[])
-{
-  pid_t pid;
-  int status;
-  int fd;
-
-  LV_UNUSED(argc);
-  LV_UNUSED(argv);
-
-  desktop_null_stdio();
-
-  for (; ; )
-    {
-      while (!esp_usbserial_connected())
-        {
-          usleep(250000);
-        }
-
-      fd = open("/dev/console", O_RDWR);
-      if (fd < 0)
-        {
-          usleep(250000);
-          continue;
-        }
-
-      dup2(fd, STDIN_FILENO);
-      dup2(fd, STDOUT_FILENO);
-      dup2(fd, STDERR_FILENO);
-      if (fd > STDERR_FILENO)
-        {
-          close(fd);
-        }
-
-      pid = task_create("nsh", 100, 4096, nsh_main, NULL);
-      desktop_null_stdio();
-
-      if (pid < 0)
-        {
-          sleep(1);
-          continue;
-        }
-
-      do
-        {
-          status = waitpid(pid, NULL, 0);
-        }
-      while (status < 0 && errno == EINTR);
-    }
-
-  return 0;
-}
-#endif
 
 enum builtin_id_e
 {
@@ -819,6 +743,9 @@ int main(int argc, FAR char *argv[])
 {
   lv_nuttx_dsc_t info;
   lv_nuttx_result_t result;
+#ifdef CONFIG_SYSTEM_NSH
+  extern int nsh_main(int argc, FAR char *argv[]);
+#endif
 #ifdef CONFIG_ESP32P4_FUNCTION_EV_BOARD_TOUCHSCREEN
   extern int board_touch_initialize(void);
 #endif
@@ -856,13 +783,7 @@ int main(int argc, FAR char *argv[])
   desktop_ui_create();
   lv_refr_now(result.disp);
 
-#if defined(CONFIG_SYSTEM_NSH) && defined(CONFIG_ESPRESSIF_USBSERIAL)
-  if (task_create("nsh_supervisor", 100, 2048,
-                  desktop_nsh_supervisor, NULL) < 0)
-    {
-      fprintf(stderr, "desktop: failed to start NSH supervisor\n");
-    }
-#elif defined(CONFIG_SYSTEM_NSH)
+#ifdef CONFIG_SYSTEM_NSH
   if (task_create("nsh", 100, 4096, nsh_main, NULL) < 0)
     {
       fprintf(stderr, "desktop: failed to start NSH\n");
