@@ -11,6 +11,7 @@
 #include <dirent.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -18,6 +19,8 @@
 
 #include <nuttx/sched.h>
 #include <lvgl/lvgl.h>
+
+#include "qpk_runtime.h"
 
 #define QPK_DIR       CONFIG_SYSTEM_DESKTOP_QPK_DIR
 #define MAX_QPK       8
@@ -48,14 +51,11 @@ struct desktop_env_s
   lv_obj_t *panel;
   lv_obj_t *current_card;
   lv_obj_t *toast;
-  lv_obj_t *qapp_tick;
-  lv_timer_t *qapp_timer;
   lv_font_t *font16;
   lv_font_t *font20;
   lv_font_t *font28;
   struct qpk_entry_s qpk[MAX_QPK];
   int nqpk;
-  unsigned int qapp_seconds;
   bool light_theme;
   bool animations;
 };
@@ -262,13 +262,7 @@ static void apply_theme(void)
 static void panel_hide(lv_event_t *e)
 {
   LV_UNUSED(e);
-  if (g_desktop.qapp_timer != NULL)
-    {
-      lv_timer_delete(g_desktop.qapp_timer);
-      g_desktop.qapp_timer = NULL;
-    }
-
-  g_desktop.qapp_tick = NULL;
+  qpk_runtime_stop();
   lv_obj_add_flag(g_desktop.panel, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -278,6 +272,7 @@ static lv_obj_t *panel_card(const char *title)
   lv_obj_t *close;
   lv_obj_t *label;
 
+  qpk_runtime_stop();
   lv_obj_remove_flag(g_desktop.panel, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clean(g_desktop.panel);
 
@@ -336,104 +331,123 @@ static void show_toast(const char *text)
   lv_timer_create(toast_delete_cb, 1600, NULL);
 }
 
-static void qapp_toast_clicked(lv_event_t *e)
-{
-  LV_UNUSED(e);
-  show_toast("来自 QPK 的问候");
-}
+static const char g_hello_qpk_js[] =
+  "'use strict';\n"
+  "const info = app.getInfo();\n"
+  "ui.text(info.packageName + '  v' + info.versionName, 24, 60, 16, ui.secondary);\n"
+  "ui.text(info.name, 320, 105, 28, ui.primary);\n"
+  "ui.button('Toast 提示', 220, 164, 300, 54, () => {\n"
+  "  prompt.showToast({message: '来自真正 QuickJS QPK 的问候'});\n"
+  "}, 0x6677f5);\n"
+  "ui.button('对话框', 220, 232, 300, 54, () => {\n"
+  "  prompt.dialog({title: 'QPK 运行时',\n"
+  "    message: '界面由 JavaScript 创建，事件由 QuickJS 执行。'});\n"
+  "}, ui.surface);\n"
+  "let secs = 0;\n"
+  "const tick = ui.text('已运行 0 秒', 320, 352, 16, ui.secondary);\n"
+  "setInterval(() => { secs++; ui.setText(tick, '已运行 ' + secs + ' 秒'); }, 1000);\n"
+  "console.log('hello QPK initialized');\n";
 
-static void dialog_close(lv_event_t *e)
+static void qpk_dialog_close(lv_event_t *e)
 {
   lv_obj_delete(lv_event_get_user_data(e));
 }
 
-static void qapp_dialog_clicked(lv_event_t *e)
+static void qpk_show_dialog(const char *text)
 {
   lv_obj_t *shade;
   lv_obj_t *box;
   lv_obj_t *button;
   lv_obj_t *label;
 
-  LV_UNUSED(e);
   shade = lv_obj_create(g_desktop.panel);
   lv_obj_set_size(shade, lv_pct(100), lv_pct(100));
   lv_obj_set_style_bg_color(shade, lv_color_hex(0x000000), 0);
   lv_obj_set_style_bg_opa(shade, LV_OPA_70, 0);
   lv_obj_set_style_border_width(shade, 0, 0);
-
   box = lv_obj_create(shade);
-  lv_obj_set_size(box, 480, 230);
+  lv_obj_set_size(box, 500, 240);
   lv_obj_center(box);
   lv_obj_set_style_bg_color(box, lv_color_hex(theme_card()), 0);
   lv_obj_set_style_radius(box, 18, 0);
-  label = make_label(box, "QPK 运行时", theme_primary(), 28);
-  lv_obj_align(label, LV_ALIGN_TOP_LEFT, 14, 8);
-  label = make_label(box, "页面由快应用描述，事件由运行时处理。",
-                     theme_secondary(),
-                     20);
-  lv_obj_align(label, LV_ALIGN_CENTER, 0, -8);
+  label = make_label(box, text ? text : "快应用", theme_primary(), 20);
+  lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(label, 440);
+  lv_obj_align(label, LV_ALIGN_TOP_LEFT, 12, 12);
   button = lv_button_create(box);
   lv_obj_set_size(button, 96, 42);
   lv_obj_align(button, LV_ALIGN_BOTTOM_RIGHT, -8, -8);
-  lv_obj_add_event_cb(button, dialog_close, LV_EVENT_CLICKED, shade);
+  lv_obj_add_event_cb(button, qpk_dialog_close, LV_EVENT_CLICKED, shade);
   label = make_label(button, "确定", 0xffffff, 20);
   lv_obj_center(label);
 }
 
-static void qapp_tick_cb(lv_timer_t *timer)
+static char *qpk_load_entry(const struct qpk_entry_s *qpk,
+                            char *filename, size_t filename_size,
+                            size_t *source_size)
 {
-  char text[48];
+  static const char *patterns[] = {"%s/%s/%s", "%s/%s/%s.js",
+                                   "%s/%s/%s/index.js"};
+  FILE *file;
+  char *source;
+  long size;
+  size_t got;
+  int i;
 
-  LV_UNUSED(timer);
-  g_desktop.qapp_seconds++;
-  if (g_desktop.qapp_tick != NULL)
+  for (i = 0; i < 3; i++)
     {
-      snprintf(text, sizeof(text), "已运行 %u 秒", g_desktop.qapp_seconds);
-      lv_label_set_text(g_desktop.qapp_tick, text);
+      if (snprintf(filename, filename_size, patterns[i], QPK_DIR, qpk->dir,
+                   qpk->entry[0] ? qpk->entry : "app.js") >= filename_size)
+        {
+          continue;
+        }
+
+      file = fopen(filename, "rb");
+      if (file == NULL)
+        {
+          continue;
+        }
+
+      if (fseek(file, 0, SEEK_END) < 0 || (size = ftell(file)) <= 0 ||
+          size > 128 * 1024 || fseek(file, 0, SEEK_SET) < 0)
+        {
+          fclose(file);
+          continue;
+        }
+
+      source = malloc((size_t)size + 1);
+      if (source == NULL)
+        {
+          fclose(file);
+          return NULL;
+        }
+
+      got = fread(source, 1, (size_t)size, file);
+      fclose(file);
+      if (got != (size_t)size)
+        {
+          free(source);
+          continue;
+        }
+
+      source[got] = '\0';
+      *source_size = got;
+      return source;
     }
-}
 
-static lv_obj_t *action_button(lv_obj_t *parent, const char *text,
-                               int y, lv_event_cb_t cb)
-{
-  lv_obj_t *button = lv_button_create(parent);
-  lv_obj_t *label;
-
-  lv_obj_set_size(button, 300, 54);
-  lv_obj_align(button, LV_ALIGN_TOP_MID, 0, y);
-  lv_obj_set_style_bg_color(button, lv_color_hex(0x6677f5), 0);
-  lv_obj_set_style_radius(button, 14, 0);
-  lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, NULL);
-  label = make_label(button, text, 0xffffff, 20);
-  lv_obj_center(label);
-  return button;
+  return NULL;
 }
 
 static void launch_builtin_qapp(lv_event_t *e)
 {
   lv_obj_t *card;
-  lv_obj_t *label;
-  lv_obj_t *button;
 
   LV_UNUSED(e);
   card = panel_card("你好快应用");
-  label = make_label(card, "com.example.hello  v1.0.2",
-                     theme_secondary(), 16);
-  lv_obj_align(label, LV_ALIGN_TOP_LEFT, 24, 60);
-  label = make_label(card, "Hello", theme_primary(), 28);
-  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 104);
-
-  action_button(card, "Toast 提示", 164, qapp_toast_clicked);
-  button = action_button(card, "对话框", 232, qapp_dialog_clicked);
-  lv_obj_set_style_bg_color(button, lv_color_hex(theme_surface()), 0);
-  lv_obj_set_style_text_color(lv_obj_get_child(button, 0),
-                              lv_color_hex(theme_primary()), 0);
-
-  g_desktop.qapp_seconds = 0;
-  g_desktop.qapp_tick = make_label(card, "已运行 0 秒",
-                                   theme_secondary(), 16);
-  lv_obj_align(g_desktop.qapp_tick, LV_ALIGN_BOTTOM_MID, 0, -18);
-  g_desktop.qapp_timer = lv_timer_create(qapp_tick_cb, 1000, NULL);
+  qpk_runtime_launch(card, "Hello", "com.example.hello", "1.0.2",
+                     "builtin:/hello/app.js", g_hello_qpk_js,
+                     sizeof(g_hello_qpk_js) - 1, zh_font, show_toast,
+                     qpk_show_dialog);
 }
 
 static void external_qapp_clicked(lv_event_t *e)
@@ -442,7 +456,10 @@ static void external_qapp_clicked(lv_event_t *e)
   struct qpk_entry_s *qpk;
   lv_obj_t *card;
   lv_obj_t *label;
+  char *source;
+  char filename[256];
   char text[256];
+  size_t source_size = 0;
 
   if (index < 0 || index >= g_desktop.nqpk)
     {
@@ -451,9 +468,24 @@ static void external_qapp_clicked(lv_event_t *e)
 
   qpk = &g_desktop.qpk[index];
   card = panel_card(qpk->name);
+  source = qpk_load_entry(qpk, filename, sizeof(filename), &source_size);
+  if (source != NULL)
+    {
+      int ret = qpk_runtime_launch(card, qpk->name, qpk->package,
+                                   qpk->version, filename, source,
+                                   source_size, zh_font, show_toast,
+                                   qpk_show_dialog);
+      free(source);
+      if (ret == 0)
+        {
+          return;
+        }
+    }
+
   snprintf(text, sizeof(text),
            "包名：%s\n版本：%s\n入口：%s\n目录：%s/%s\n\n"
-           "清单已由桌面运行时载入。下一步接入 .ux 与 QuickJS。",
+           "无法加载 JavaScript 入口。当前运行时支持 .js QPK；"
+           "MicroReactor 风格 .ux 解析器将在下一阶段接入。",
            qpk->package[0] ? qpk->package : "未声明",
            qpk->version[0] ? qpk->version : "未声明",
            qpk->entry[0] ? qpk->entry : "未声明", QPK_DIR, qpk->dir);

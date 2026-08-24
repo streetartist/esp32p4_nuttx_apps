@@ -28,7 +28,7 @@ QUICKJS_UNPACK      = quickjs
 QUICKJS_ARCHIVE     = $(QUICKJS_COMMIT_ID).zip
 QUICKJS_URL         = https://github.com/bellard/quickjs/archive/$(QUICKJS_ARCHIVE)
 
-CSRCS = quickjs.c libregexp.c libbf.c libunicode.c cutils.c
+CSRCS = quickjs.c libregexp.c libbf.c libunicode.c cutils.c qjs_nuttx_compat.c
 
 VERSION=\"$(QUICKJS_VERSION)\"
 
@@ -48,6 +48,13 @@ CFLAGS += -DFE_TONEAREST=0x00000000
 CFLAGS += -DFE_UPWARD=0x00400000
 CFLAGS += -DFE_DOWNWARD=0x00800000
 CFLAGS += -DFE_TOWARDZERO=0x00c00000
+endif
+
+ifeq ($(CONFIG_ARCH_RISCV),y)
+CFLAGS += -DFE_TONEAREST=0x00000000
+CFLAGS += -DFE_UPWARD=0x00000003
+CFLAGS += -DFE_DOWNWARD=0x00000002
+CFLAGS += -DFE_TOWARDZERO=0x00000001
 endif
 
 ifeq ($(CONFIG_INTERPRETERS_QUICKJS_BIGNUM),y)
@@ -74,6 +81,7 @@ $(QUICKJS_UNPACK): $(QUICKJS_ARCHIVE)
 	$(Q) unzip -q -o quickjs-$(QUICKJS_ARCHIVE)
 	$(Q) mv quickjs-$(QUICKJS_COMMIT_ID) $(QUICKJS_UNPACK)
 	$(Q) patch -d $(QUICKJS_UNPACK) -p1 < 0001-Disabled-unsupported-feature-on-NuttX.patch
+	$(Q) patch -d $(QUICKJS_UNPACK) -p1 < 0003-Avoid-NuttX-list-macro-collisions.patch
 
 ifeq ($(CONFIG_INTERPRETERS_QUICKJS_MINI),y)
 MAINSRC = qjsmini.c
