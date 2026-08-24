@@ -1,0 +1,14 @@
+############################################################################
+# apps/system/desktop/Makefile
+############################################################################
+
+include $(APPDIR)/Make.defs
+
+PROGNAME  = $(CONFIG_SYSTEM_DESKTOP_PROGNAME)
+PRIORITY  = $(CONFIG_SYSTEM_DESKTOP_PRIORITY)
+STACKSIZE = $(CONFIG_SYSTEM_DESKTOP_STACKSIZE)
+MODULE    = $(CONFIG_SYSTEM_DESKTOP)
+
+MAINSRC = desktop_main.c
+
+include $(APPDIR)/Application.mk
