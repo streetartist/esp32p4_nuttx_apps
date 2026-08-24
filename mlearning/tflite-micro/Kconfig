@@ -1,0 +1,69 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config TFLITEMICRO
+	bool "TFLiteMicro"
+	default n
+	depends on SYSTEM_FLATBUFFERS && MATH_GEMMLOWP && MATH_KISSFFT && MATH_RUY
+
+if TFLITEMICRO
+config TFLITEMICRO_DEBUG
+	bool "Print tflite-micro's debug message"
+	default n
+
+config TFLITEMICRO_TOOL
+	bool "tflite-micro cmdline tool"
+	default n
+
+config TFLITEMICRO_SYSLOG
+	bool "tflite-micro syslog backend"
+	default n
+
+if TFLITEMICRO_SYSLOG
+
+config TFLITEMICRO_SYSLOG_LEVEL
+	int "tflite-micro syslog level"
+	default 6
+	---help---
+		Syslog level mapping of tflm, This log level mapping is consistent
+		with the nuttx syslog level, please refer to syslog.h:
+
+		define LOG_EMERG     0  /* System is unusable */
+		define LOG_ALERT     1  /* Action must be taken immediately */
+		define LOG_CRIT      2  /* Critical conditions */
+		define LOG_ERR       3  /* Error conditions */
+		define LOG_WARNING   4  /* Warning conditions */
+		define LOG_NOTICE    5  /* Normal, but significant, condition */
+		define LOG_INFO      6  /* Informational message */
+		define LOG_DEBUG     7  /* Debug-level message */
+
+endif # TFLITEMICRO_SYSLOG
+
+if TFLITEMICRO_TOOL
+config TFLITEMICRO_TOOL_PRIORITY
+	int "tflite-micro tool priority"
+	default 100
+
+config TFLITEMICRO_TOOL_STACKSIZE
+	int "tflite-micro tool stacksize"
+	default 4096
+
+endif # TFLITEMICRO_TOOL
+
+config TFLITEMICRO_HELLOWORLD
+	bool "Enable Tflite-micro hello world example"
+	default n
+
+if TFLITEMICRO_HELLOWORLD
+config TFLITEMICRO_HELLOWORLD_PRIORITY
+	int "Tflite-micro hello world priority"
+	default 100
+
+config TFLITEMICRO_HELLOWORLD_STACKSIZE
+	int "Tflite-micro hello world stacksize"
+	default 4096
+
+endif # TFLITEMICRO_HELLOWORLD
+endif # TFLITEMICRO

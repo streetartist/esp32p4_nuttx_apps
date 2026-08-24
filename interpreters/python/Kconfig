@@ -1,0 +1,65 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config INTERPRETERS_CPYTHON
+	tristate "CPython"
+	depends on LIB_ZLIB
+	depends on !LIBC_DLFCN || LIB_LIBFFI
+	depends on EXPERIMENTAL
+	default n
+	---help---
+		Enable the CPython port to NuttX. This is a port of the Python
+		interpreter to NuttX. Initially, it is tweaked to work with the
+		RISC-V QEMU virtual board (`rv-virt`).
+
+if INTERPRETERS_CPYTHON
+
+config INTERPRETERS_CPYTHON_VERSION
+	string "Python Version"
+	default "3.13.0"
+
+config INTERPRETERS_CPYTHON_STACKSIZE
+	int "CPython stack size"
+	default 307200
+	---help---
+		This is the stack size allocated when the CPython task runs.
+
+config INTERPRETERS_CPYTHON_PRIORITY
+	int "CPython task priority"
+	default 100
+	---help---
+		This is the priority of the CPython task.
+
+config INTERPRETERS_CPYTHON_PROGNAME
+	string "CPython name"
+	default "python"
+	---help---
+		This is the name of the program that will be used from the nsh.
+
+config INTERPRETERS_CPYTHON_ENABLE_PIP
+	bool "Enable bundled pip"
+	default n
+	---help---
+		Enable bundling pip into the CPython module image. When enabled, the
+		build downloads the pip wheel and pre-installs it through a
+		site-packages .pth entry that points to ensurepip's bundled wheel.
+		Disable this to skip pip wheel download/integration entirely.
+
+config INTERPRETERS_CPYTHON_INSTALL_NUTTX_PACKAGE
+	bool "Install NuttX Python package"
+	default y
+	---help---
+		Installs the nuttx-periphery Python package into the CPython module image.
+		This allows importing the nuttx-periphery package into the CPython interpreter,
+		which provides a Python interface to the NuttX's peripheral drivers.
+
+config INTERPRETERS_CPYTHON_PYTHONPATH
+	string "CPython Python path"
+	default "/tmp"
+	---help---
+		This is the Python default search path for modules files. This is
+		required to be a writable path.
+
+endif

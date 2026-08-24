@@ -1,0 +1,36 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+config EXAMPLES_AUDIO_SOUND
+	bool "Audio tone generator example (RTTL player)"
+	depends on AUDIO
+	depends on AUDIOUTILS_RTTTL_C
+	default n
+	---help---
+		Enable the audio RTTL player example.
+
+if EXAMPLES_AUDIO_SOUND
+
+config EXAMPLES_AUDIO_SOUND_PROGNAME
+	string "Program name"
+	default "audio_rttl"
+
+config EXAMPLES_AUDIO_SOUND_PRIORITY
+	int "Audio sound task priority"
+	default 150
+
+config EXAMPLES_AUDIO_SOUND_STACKSIZE
+	int "Audio sound stack size"
+	default DEFAULT_TASK_STACKSIZE
+
+comment "Program options"
+
+config EXAMPLES_AUDIO_SOUND_MAXLEN
+	int "Maximum RTTL string length"
+	default 256
+	---help---
+		The maximum length of an RTTL string that can be read from a file.
+
+endif

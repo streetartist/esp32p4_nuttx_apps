@@ -1,0 +1,7 @@
+############################################################################
+# apps/system/desktop/Make.defs
+############################################################################
+
+ifneq ($(CONFIG_SYSTEM_DESKTOP),)
+CONFIGURED_APPS += $(APPDIR)/system/desktop
+endif

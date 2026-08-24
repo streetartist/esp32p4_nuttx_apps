@@ -1,0 +1,634 @@
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches:
+      - 'releases/*'
+    tags:
+
+# pull-requests read: Fetch-Source re-reads the PR description so that a
+# manual re-run picks up Depends-On lines edited after the run was created.
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fetch the source from nuttx and nuttx-apps repos
+  Fetch-Source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CI scripts
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+          fetch-depth: 1
+      - name: Determine Target Branches
+        id: gittargets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPORT_PATH: depends-on-report/result.json
+        run: |
+          OS_REF=""
+          APPS_REF=""
+
+          # The event payload keeps the PR description from when the run was
+          # created; re-read it so a manual re-run picks up an edited
+          # Depends-On line. Keep the payload copy if the API call fails.
+          if [ -n "${PR_NUMBER:-}" ]; then
+            if LIVE_BODY="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.body // ""')"; then
+              PR_BODY="$LIVE_BODY"
+            else
+              echo "::warning::Could not re-read the PR description; using the copy from the event payload."
+            fi
+          fi
+
+          REF=$GITHUB_REF
+
+          # If a base ref is set this is a PR and we will want to use
+          # the base ref instead of the ref that triggered the event
+          if [ ${GITHUB_BASE_REF} ]; then
+            REF=refs/heads/$GITHUB_BASE_REF
+          fi
+
+          echo "Working with ref: $REF"
+
+          # We modify for all tags and release branches
+          if [[ $REF =~ refs/heads/releases/*|refs/tags/* ]]; then
+            if [[ $REF =~ refs/heads/* ]]
+              then
+                REF_NAME=${REF##refs/heads/}
+                echo "Working with a branch: $REF_NAME"
+              else
+                REF_NAME=${REF##refs/tags/}
+                echo "Working with a tag: $REF_NAME"
+            fi
+
+            # Determine the repo and leave that unset to use the normal checkout behavior
+            # of using the merge commit instead of HEAD
+            case $GITHUB_REPOSITORY in
+              "apache/nuttx")
+                # OS
+                echo "Triggered by change in OS"
+                APPS_REF=$REF_NAME
+                ;;
+
+              "apache/nuttx-apps" )
+                # APPS
+                OS_REF=$REF_NAME
+                echo "Triggered by change in APPS"
+                ;;
+
+              *)
+                echo "Trigger by change on $GITHUB_REPOSITORY. This is unexpected."
+                ;;
+            esac
+          fi
+
+          # Release and backport PRs ignore dependencies.
+          if [ -n "$PR_BODY" ] && [ "$GITHUB_BASE_REF" = "master" ]; then
+            python3 .github/scripts/depends_on.py --github-output
+          fi
+
+          echo "os_ref=$OS_REF" >> $GITHUB_OUTPUT
+          echo "apps_ref=$APPS_REF" >> $GITHUB_OUTPUT
+
+      - name: Checkout nuttx repo
+        uses: actions/checkout@v7
+        with:
+          repository: apache/nuttx
+          ref: ${{ steps.gittargets.outputs.os_ref }}
+          path: sources/nuttx
+          fetch-depth: 1
+      - name: Checkout nuttx repo tags
+        run: git -C sources/nuttx fetch --tags
+
+      - name: Checkout apps repo
+        uses: actions/checkout@v7
+        with:
+          repository: apache/nuttx-apps
+          ref: ${{ steps.gittargets.outputs.apps_ref }}
+          path: sources/apps
+          fetch-depth: 1
+
+      - name: Apply depends-on PRs
+        if: ${{ steps.gittargets.outputs.depends_on != '' }}
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          git config --global user.email "actions@github.com"
+          git config --global user.name "github-actions"
+
+          # Pass only fixed error codes to the trusted comment workflow.
+          mark_failed() {
+          echo "::error::could not apply $1 ($2)"
+          python3 - "$2" <<'PY'
+          import json, sys
+          p = "depends-on-report/result.json"
+          try:
+              d = json.load(open(p))
+          except Exception:
+              d = {"version": 1, "pr_number": None, "head_sha": None, "dependencies": [], "warnings": []}
+          d["status"] = "failed"
+          d["error_code"] = sys.argv[1]
+          open(p, "w").write(json.dumps(d))
+          PY
+          }
+
+          # Parse before the loop so process substitution cannot hide errors.
+          if ! python3 - > depends-on-report/deps.tsv <<'PY'
+          import json
+          with open("depends-on-report/result.json", encoding="utf-8") as f:
+              d = json.load(f)
+          for x in d["dependencies"]:
+              print("%s\t%d" % (x["repo"], x["number"]))
+          PY
+          then
+            echo "::error::could not read the dependency report"
+            mark_failed "depends-on" "report_parse_failed"; exit 1
+          fi
+
+          : > depends-on-report/applied.tsv
+
+          while IFS=$'\t' read -r DEP_REPO DEP_PR_NUM; do
+            [ -n "$DEP_REPO" ] || continue
+            DEP="${DEP_REPO}/pull/${DEP_PR_NUM}"
+
+            case "$DEP_REPO" in
+              "apache/nuttx") REPO_PATH="sources/nuttx" ;;
+              "apache/nuttx-apps")  REPO_PATH="sources/apps" ;;
+              *)
+                echo "::error::Unsupported dependency repo: $DEP_REPO"
+                mark_failed "$DEP" "unsupported_repo"; exit 1 ;;
+            esac
+
+            echo "Applying dependency ${DEP}"
+            if [ -f "$REPO_PATH/.git/shallow" ]; then
+              git -C "$REPO_PATH" fetch --unshallow origin || true
+            fi
+            if ! git -C "$REPO_PATH" fetch origin "pull/${DEP_PR_NUM}/head:dep-${DEP_PR_NUM}"; then
+              echo "::error::Could not fetch ${DEP} (the PR may not exist)."
+              mark_failed "$DEP" "fetch_failed"; exit 1
+            fi
+
+            DEP_SHA=$(git -C "$REPO_PATH" rev-parse "dep-${DEP_PR_NUM}")
+            printf '%s\t%s\t%s\n' "$DEP_REPO" "$DEP_PR_NUM" "$DEP_SHA" >> depends-on-report/applied.tsv
+
+            # Stop on unrelated histories; HEAD..dep would otherwise include
+            # every dependency commit and could cherry-pick unrelated changes.
+            COMMON_BASE=$(git -C "$REPO_PATH" merge-base "dep-${DEP_PR_NUM}" HEAD || true)
+            if [ -z "$COMMON_BASE" ]; then
+              echo "::error::Could not find common base for ${DEP}"
+              mark_failed "$DEP" "no_common_base"; exit 1
+            fi
+
+            COMMITS=$(git -C "$REPO_PATH" rev-list --reverse "HEAD..dep-${DEP_PR_NUM}") || {
+              echo "::error::Could not list commits for ${DEP}"
+              mark_failed "$DEP" "rev_list_failed"; exit 1
+            }
+
+            if [ -z "$COMMITS" ]; then
+              echo "Dependency ${DEP} is already included"
+              continue
+            fi
+
+            # shellcheck disable=SC2086
+            if ! git -C "$REPO_PATH" cherry-pick $COMMITS; then
+              echo "::error::cherry-pick failed for ${DEP}."
+              echo "::error::If your PR contains merge commits, please rebase instead of merge."
+              git -C "$REPO_PATH" cherry-pick --abort || true
+              mark_failed "$DEP" "cherry_pick_conflict"; exit 1
+            fi
+          done < depends-on-report/deps.tsv
+
+          python3 - <<'PY'
+          import json
+          shas = {}
+          try:
+              with open("depends-on-report/applied.tsv", encoding="utf-8") as f:
+                  for line in f:
+                      p = line.rstrip("\n").split("\t")
+                      if len(p) == 3:
+                          shas[(p[0], p[1])] = p[2]
+          except FileNotFoundError:
+              pass
+          with open("depends-on-report/result.json", encoding="utf-8") as f:
+              d = json.load(f)
+          for dep in d.get("dependencies", []):
+              key = (dep.get("repo"), str(dep.get("number")))
+              if key in shas:
+                  dep["head_sha"] = shas[key]
+          with open("depends-on-report/result.json", "w", encoding="utf-8") as f:
+              json.dump(d, f)
+          PY
+
+      # Apply failures rewrite the report file; the step output remains "ok".
+      - name: Upload depends-on report
+        if: ${{ always() && (steps.gittargets.outputs.status == 'ok' || steps.gittargets.outputs.status == 'invalid') }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: depends-on-report
+          path: depends-on-report/
+
+      - name: Tar sources
+        run: tar zcf sources.tar.gz sources
+
+      - name: Archive Source Bundle
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: source-bundle
+          path: sources.tar.gz
+
+  # Select the Linux Builds based on PR Arch Label
+  Linux-Arch:
+    uses: apache/nuttx-apps/.github/workflows/arch.yml@master
+    needs: Fetch-Source
+    with:
+      os: Linux
+      boards: |
+        [
+          "arm-01", "risc-v-01", "sim-01", "xtensa-01", "arm64-01", "x86_64-01", "other",
+          "arm-02", "risc-v-02", "sim-02", "xtensa-02",
+          "arm-03", "risc-v-03", "sim-03", "xtensa-03",
+          "arm-04", "risc-v-04",
+          "arm-05", "risc-v-05",
+          "arm-06", "risc-v-06",
+          "arm-07", "arm-08", "arm-09", "arm-10", "arm-11", "arm-12", "arm-13", "arm-14"
+        ]
+
+  # Run the selected Linux Builds
+  Linux:
+    needs: Linux-Arch
+    if: ${{ needs.Linux-Arch.outputs.skip_all_builds != '1' }}
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_BUILDKIT: 1
+      # Documented sim/login CI test credential (not a production secret).
+      # Used when CONFIG_BOARD_ETC_ROMFS_PASSWD_ENABLE=y and defconfig omits
+      # the password.  See nuttx tools/update_romfs_password.sh.
+      NUTTX_ROMFS_PASSWD_PASSWORD: NuttXSimLogin1!
+
+    strategy:
+      max-parallel: 12
+      matrix:
+        boards: ${{ fromJSON(needs.Linux-Arch.outputs.selected_builds) }}
+
+    steps:
+
+      - name: Show Disk Space
+        run: df -h
+
+      - name: Free Disk Space (Ubuntu)
+        run: |
+          sudo rm -rf /usr/local/lib/android
+
+      - name: After CLEAN-UP Disk Space
+        run: df -h
+
+      - name: Download Source Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: source-bundle
+          path: .
+
+      - name: Extract sources
+        run: tar zxf sources.tar.gz
+
+      - name: Docker Login
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker Pull
+        run: docker pull ghcr.io/apache/nuttx/apache-nuttx-ci-linux
+
+      - name: Export NuttX Repo SHA
+        run: echo "nuttx_sha=`git -C sources/nuttx rev-parse HEAD`" >> $GITHUB_ENV
+
+      - name: Run builds
+        uses: ./sources/nuttx/.github/actions/ci-container
+        env:
+          BLOBDIR: /tools/blobs
+          NUTTX_ROMFS_PASSWD_PASSWORD: NuttXSimLogin1!
+        with:
+          run: |
+            export NUTTX_ROMFS_PASSWD_PASSWORD=NuttXSimLogin1!
+            export ARTIFACTDIR=`pwd`/buildartifacts
+
+            for i in 1 2 3; do
+              python -m pip install \
+                --default-timeout=100 \
+                --retries 10 \
+                ntfc==0.0.1 && break
+              echo "Retry $i failed..."
+              sleep 5
+            done
+
+            mkdir /github/workspace/nuttx-ntfc
+            mkdir /github/workspace/nuttx-ntfc/external
+            cd /github/workspace/nuttx-ntfc
+            # get NTFC test cases
+            cd external
+            for i in 1 2 3 4 5; do
+              git clone -b release-0.0.1 https://github.com/apache/nuttx-ntfc-testing && break
+              if [ "$i" -eq 5 ]; then
+                echo "Failed to clone nuttx-ntfc-testing after $i attempts"
+                exit 1
+              fi
+
+              delay=$((i * 10))
+              echo "Clone attempt $i failed; retrying in ${delay}s..."
+              rm -rf nuttx-ntfc-testing
+              sleep "$delay"
+            done
+            mv nuttx-ntfc-testing nuttx-testing
+            export NTFCDIR=/github/workspace/nuttx-ntfc
+
+            echo "::add-matcher::sources/nuttx/.github/gcc.json"
+            git config --global --add safe.directory /github/workspace/sources/nuttx
+            git config --global --add safe.directory /github/workspace/sources/apps
+            cd /github/workspace/sources/nuttx/tools/ci
+            if [ "X${{matrix.boards}}" = "Xcodechecker" ]; then
+                ./cibuild.sh -c -A -N -R --codechecker testlist/${{matrix.boards}}.dat
+            else
+                ( sleep 7200 ; echo Killing pytest after timeout... ; pkill -f pytest )&
+                ./cibuild.sh -c -A -N -R -S testlist/${{matrix.boards}}.dat
+            fi
+
+      - name: Post-build Disk Space
+        if: always()
+        run: df -h
+
+      - uses: actions/upload-artifact@v7.0.1
+        if: ${{ always() }}
+        with:
+          name: linux-${{matrix.boards}}-builds
+          path: buildartifacts/
+        continue-on-error: true
+
+  # Test the out-of-tree build
+  OOT-Build:
+    needs: Linux
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_BUILDKIT: 1
+    steps:
+      - name: Download Source Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: source-bundle
+          path: .
+
+      - name: Extract sources
+        run: tar zxf sources.tar.gz
+
+      - name: Docker Login
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Export NuttX Repo SHA
+        run: echo "nuttx_sha=`git -C sources/nuttx rev-parse HEAD`" >> $GITHUB_ENV
+
+      - name: Run Out-of-Tree Build Test
+        uses: ./sources/nuttx/.github/actions/ci-container
+        env:
+          BLOBDIR: /tools/blobs
+        with:
+          run: |
+            echo "::add-matcher::sources/nuttx/.github/gcc.json"
+            git config --global --add safe.directory /github/workspace/sources/nuttx
+            git config --global --add safe.directory /github/workspace/sources/apps
+            cd sources/nuttx
+            ./tools/ci/cibuild-oot.sh
+
+      - uses: actions/upload-artifact@v7.0.1
+        if: ${{ always() }}
+        with:
+          name: oot-build-artifacts
+          path: sources/apps/testing/cxx-oot-build
+        continue-on-error: true
+
+  # Select the macOS Builds based on PR Arch Label
+  macOS-Arch:
+    uses: apache/nuttx-apps/.github/workflows/arch.yml@master
+    needs: Fetch-Source
+    with:
+      os: macOS
+      boards: |
+        ["macos", "sim-01", "sim-02", "sim-03"]
+
+  # Run the selected macOS Builds
+  macOS:
+    permissions:
+      contents: none
+    runs-on: macos-15-intel
+    needs: macOS-Arch
+    if: ${{ needs.macOS-Arch.outputs.skip_all_builds != '1' }}
+    env:
+      NUTTX_ROMFS_PASSWD_PASSWORD: NuttXSimLogin1!
+    strategy:
+      max-parallel: 2
+      matrix:
+        boards: ${{ fromJSON(needs.macOS-Arch.outputs.selected_builds) }}
+    steps:
+      - name: Download Source Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: source-bundle
+          path: .
+
+      - name: Extract sources
+        run: tar zxf sources.tar.gz
+
+      - name: Restore Tools Cache
+        id: cache-tools
+        uses: actions/cache@v6
+        env:
+          cache-name: ${{ runner.os }}-cache-tools
+        with:
+          path: ./sources/tools
+          key: ${{ runner.os }}-tools-${{ hashFiles('./sources/nuttx/tools/ci/platforms/darwin.sh') }}
+
+      - name: Export NuttX Repo SHA
+        run: echo "nuttx_sha=`git -C sources/nuttx rev-parse HEAD`" >> $GITHUB_ENV
+
+      # Released version of Cython has issues with Python 11. Set runner to use Python 3.10
+      # https://github.com/cython/cython/issues/4500
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.10'
+      - name: Run Builds
+        run: |
+          echo "::add-matcher::sources/nuttx/.github/gcc.json"
+          export NUTTX_ROMFS_PASSWD_PASSWORD=NuttXSimLogin1!
+          export ARTIFACTDIR=`pwd`/buildartifacts
+          cd sources/nuttx/tools/ci
+          ./cibuild.sh -i -c -A -R testlist/${{matrix.boards}}.dat
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: macos-${{matrix.boards}}-builds
+          path: buildartifacts/
+        continue-on-error: true
+
+  # Select the msys2 Builds based on PR Arch Label
+  msys2-Arch:
+    uses: apache/nuttx-apps/.github/workflows/arch.yml@master
+    needs: Fetch-Source
+    with:
+      os: msys2
+      boards: |
+        ["msys2"]
+
+  # Run the selected msys2 Builds
+  msys2:
+    needs: msys2-Arch
+    if: ${{ needs.msys2-Arch.outputs.skip_all_builds != '1' }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        boards: ${{ fromJSON(needs.msys2-Arch.outputs.selected_builds) }}
+
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: false
+          cache: false
+          install: >-
+            base-devel
+            gcc
+            gperf
+            automake
+            autoconf
+            git
+            python3
+            ncurses-devel
+            unzip
+            zip
+            tio
+            zlib-devel
+            cmake
+            ninja
+            python-pip
+            vim
+            genromfs
+
+      - name: pip3 install
+        run: |
+          python3 -m venv --system-site-packages /usr/local
+          pip3 install --root-user-action=ignore --no-cache-dir pyelftools cxxfilt kconfiglib
+
+      - run: git config --global core.autocrlf false
+
+      - name: Download Source Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: source-bundle
+          path: .
+
+      - name: Extract sources
+        run: tar zxf sources.tar.gz
+
+      - name: Export NuttX Repo SHA
+        run: echo "nuttx_sha=`git -C sources/nuttx rev-parse HEAD`" >> $GITHUB_ENV
+
+      - name: Run Builds
+        run: |
+          echo "::add-matcher::sources/nuttx/.github/gcc.json"
+          export ARTIFACTDIR=`pwd`/buildartifacts
+          git config --global --add safe.directory /github/workspace/sources/nuttx
+          git config --global --add safe.directory /github/workspace/sources/apps
+          cd sources/nuttx/tools/ci
+          ./cibuild.sh -g -i -A -C -N -R testlist/${{matrix.boards}}.dat
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: msys2-${{matrix.boards}}-builds
+          path: buildartifacts/
+        continue-on-error: true
+
+  # Select the msvc Builds based on PR Arch Label
+  msvc-Arch:
+    uses: apache/nuttx-apps/.github/workflows/arch.yml@master
+    needs: Fetch-Source
+    with:
+      os: msvc
+      boards: |
+        ["msvc_placeholder_with_sim_keyword"]
+
+  # Build with MSVC in Windows native
+  msvc:
+    needs: msvc-Arch
+    if: ${{ needs.msvc-Arch.outputs.skip_all_builds != '1' }}
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+      # Set up Python environment and install kconfiglib
+      - name: Set up Python and install kconfiglib
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.10'
+      - name: Install kconfiglib
+        run: |
+          pip install kconfiglib
+
+      - run: git config --global core.autocrlf false
+
+      - name: Download Source Artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: source-bundle
+          path: .
+
+      - name: Extract sources
+        run: |
+          7z x sources.tar.gz -y
+          7z x sources.tar -y -snld
+
+      - name: Run Builds
+        run: |
+          "ARTIFACTDIR=${{github.workspace}}\sources\buildartifacts" >> $env:GITHUB_ENV
+          git config --global --add safe.directory ${{github.workspace}}\sources\nuttx
+          git config --global --add safe.directory ${{github.workspace}}\sources\apps
+          cd sources\nuttx\tools\ci
+          .\cibuild.ps1 -n -i -A -C -N testlist\windows.dat
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: msvc-builds
+          path: ./sources/buildartifacts/
+        continue-on-error: true

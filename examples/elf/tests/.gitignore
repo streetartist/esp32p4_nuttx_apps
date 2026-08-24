@@ -1,0 +1,9 @@
+/romfs
+/romfs.c
+/romfs.img
+/cromfs
+/cromfs.c
+/dirlist.c
+/extfs
+/symtab.c
+/Kconfig

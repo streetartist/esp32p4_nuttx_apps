@@ -1,0 +1,87 @@
+#
+# For a description of the syntax of this configuration file,
+# see the file kconfig-language.txt in the NuttX tools repository.
+#
+
+menuconfig EXAMPLES_LVGLTERM
+	tristate "LVGL Terminal"
+	default n
+	depends on GRAPHICS_LVGL
+	---help---
+		Enable LVGL Terminal
+
+if EXAMPLES_LVGLTERM
+
+choice
+	prompt "LVGL Terminal input source"
+	default EXAMPLES_LVGLTERM_INPUT_TOUCH
+	---help---
+		Select how the terminal receives keystrokes.  Only one input source
+		is built at a time.
+
+config EXAMPLES_LVGLTERM_INPUT_TOUCH
+	bool "On-screen keyboard (touch)"
+	---help---
+		Input comes from an on-screen LVGL keyboard operated by touch; a
+		command line is typed and submitted with Enter.  This is the default
+		and matches the original behaviour.
+
+config EXAMPLES_LVGLTERM_INPUT_KBD
+	bool "Physical keyboard"
+	depends on INPUT_KEYBOARD
+	---help---
+		Any keyboard registered with keyboard_register():  USB HID, a matrix,
+		the simulator, virtio.  The terminal does not need to know which one
+		it is.  Cursor Up and Down scroll the terminal, everything else goes
+		to the shell.
+
+endchoice
+
+config EXAMPLES_LVGLTERM_KBD_DEV
+	string "Keyboard device path"
+	default "/dev/kbd0"
+	depends on EXAMPLES_LVGLTERM_INPUT_KBD
+	---help---
+		Keyboard device the terminal reads from.  Can also be overridden at
+		run time by passing the path as the first command-line argument
+		(useful when more than one keyboard is present).
+
+		Note that the USB HID driver names its devices /dev/kbda onwards,
+		since they come and go as keyboards are plugged in.
+
+choice
+	prompt "LVGL Terminal font"
+	default EXAMPLES_LVGLTERM_FONT_UNSCII_16
+	---help---
+		Monospaced font used to render the terminal.  Use the smaller UNSCII 8
+		on low-resolution displays where UNSCII 16 shows too few columns.
+
+config EXAMPLES_LVGLTERM_FONT_UNSCII_8
+	bool "UNSCII 8 (small)"
+	select LV_FONT_UNSCII_8
+
+config EXAMPLES_LVGLTERM_FONT_UNSCII_16
+	bool "UNSCII 16"
+	select LV_FONT_UNSCII_16
+
+endchoice
+
+config EXAMPLES_LVGLTERM_PRIORITY
+	int "lvglterm task priority"
+	default 100
+
+config EXAMPLES_LVGLTERM_STACKSIZE
+	int "lvglterm stack size"
+	default 16384
+
+endif # EXAMPLES_LVGLTERM
+
+config EXAMPLES_LVGLTERM_SHELL
+	string "Shell to run in the terminal"
+	default "nsh"
+	depends on EXAMPLES_LVGLTERM
+	---help---
+		The program the terminal spawns.  A bare name is looked up on
+		PATH; a path is taken as given, which is what a configuration
+		installing NSH under another name needs -- "/system/bin/init",
+		for instance, where NSH is the system's init.
