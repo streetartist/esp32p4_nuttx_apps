@@ -10,14 +10,15 @@
 
 #include <errno.h>
 #include <net/if.h>
+#include <sched.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <nuttx/net/net.h>
 #include <nuttx/net/netdev.h>
 #include <nuttx/net/netconfig.h>
-#include <nuttx/wqueue.h>
 
 #include "c6net.h"
 #include "esp_hosted.h"
@@ -27,12 +28,14 @@
 #endif
 
 #define C6NET_BUFSIZE (CONFIG_NET_ETH_PKTSIZE + 64)
-#define C6NET_POLL_MS 10
+#define C6NET_POLL_US       10000
+#define C6NET_TASK_PRIORITY 100
+#define C6NET_TASK_STACK    4096
 
 struct c6net_state_s
 {
   struct net_driver_s dev;
-  struct work_s work;
+  pid_t daemon_pid;
   bool initialized;
   bool ifup;
   bool associated;
@@ -42,20 +45,14 @@ struct c6net_state_s
 
 static struct c6net_state_s g_c6net;
 
-static void c6net_rxwork(FAR void *arg);
-
-static void c6net_schedule(FAR struct c6net_state_s *priv,
-                           clock_t delay)
+static int c6net_daemon(int argc, FAR char *argv[])
 {
-  work_queue(HPWORK, &priv->work, c6net_rxwork,
-             priv, delay);
-}
+  FAR struct c6net_state_s *priv = &g_c6net;
 
-static void c6net_rxwork(FAR void *arg)
-{
-  FAR struct c6net_state_s *priv = arg;
+  UNUSED(argc);
+  UNUSED(argv);
 
-  if (priv->initialized)
+  while (priv->initialized)
     {
       if (priv->event_pending)
         {
@@ -73,9 +70,12 @@ static void c6net_rxwork(FAR void *arg)
       while (esp_hosted_poll() > 0)
         {
         }
+
+      usleep(C6NET_POLL_US);
     }
 
-  c6net_schedule(priv, MSEC2TICK(C6NET_POLL_MS));
+  priv->daemon_pid = -1;
+  return 0;
 }
 
 static int c6net_txpoll(FAR struct net_driver_s *dev)
@@ -256,7 +256,15 @@ int c6net_initialize(FAR const char *ssid, FAR const char *password)
   priv->ifup = true;
   priv->associated = false;
   c6net_ifup(&priv->dev);
-  c6net_schedule(priv, 0);
+
+  priv->daemon_pid = task_create("c6net", C6NET_TASK_PRIORITY,
+                                 C6NET_TASK_STACK, c6net_daemon, NULL);
+  if (priv->daemon_pid < 0)
+    {
+      priv->initialized = false;
+      return -errno;
+    }
+
   return 0;
 }
 
