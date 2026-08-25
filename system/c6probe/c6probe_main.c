@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include "esp_hosted.h"
+#include "c6net.h"
 
 int main(int argc, FAR char *argv[])
 {
@@ -51,6 +52,14 @@ int main(int argc, FAR char *argv[])
              " INT=%08" PRIx32 "\n", cret, tok, pend, intr);
 
       return EXIT_SUCCESS;
+    }
+
+  if (argc > 1 && strcmp(argv[1], "net") == 0)
+    {
+      ret = c6net_initialize(argc > 2 ? argv[2] : "",
+                             argc > 3 ? argv[3] : "");
+      printf("c6probe: network init ret=%d\n", ret);
+      return ret < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
     }
 
   /* connect [<ssid> [<password>]] associates with an AP.  Credentials are

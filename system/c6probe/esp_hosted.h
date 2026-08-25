@@ -129,6 +129,8 @@ typedef CODE void (*esp_hosted_rx_cb_t)(FAR void *arg, uint8_t if_num,
                                         FAR const uint8_t *payload,
                                         uint16_t len, uint8_t pkt_type);
 
+typedef CODE void (*esp_hosted_wifi_event_cb_t)(FAR void *arg, bool connected);
+
 /****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
@@ -275,5 +277,8 @@ int esp_hosted_rpc_wifi_scan(void);
  ****************************************************************************/
 
 int esp_hosted_rpc_wifi_connect(FAR const char *ssid, FAR const char *pwd);
+
+int esp_hosted_rpc_set_wifi_event_cb(esp_hosted_wifi_event_cb_t cb,
+                                     FAR void *arg);
 
 #endif /* __APPS_SYSTEM_C6PROBE_ESP_HOSTED_H */

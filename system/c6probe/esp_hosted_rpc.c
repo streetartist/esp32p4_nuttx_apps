@@ -74,6 +74,9 @@ static struct rpc_client_s g_rpc =
   .resp_sem = SEM_INITIALIZER(0),
 };
 
+static esp_hosted_wifi_event_cb_t g_wifi_event_cb;
+static FAR void *g_wifi_event_arg;
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -232,15 +235,31 @@ static void rpc_rx_cb(FAR void *arg, uint8_t if_num,
           if (msg->payload_case == RPC__PAYLOAD_EVENT_STA_CONNECTED)
             {
               printf("rpc: EVENT StaConnected\n");
+              if (g_wifi_event_cb != NULL)
+                {
+                  g_wifi_event_cb(g_wifi_event_arg, true);
+                }
             }
           else if (msg->payload_case == RPC__PAYLOAD_EVENT_STA_DISCONNECTED)
             {
               printf("rpc: EVENT StaDisconnected\n");
+              if (g_wifi_event_cb != NULL)
+                {
+                  g_wifi_event_cb(g_wifi_event_arg, false);
+                }
             }
         }
 
       rpc__free_unpacked(msg, NULL);
     }
+}
+
+int esp_hosted_rpc_set_wifi_event_cb(esp_hosted_wifi_event_cb_t cb,
+                                     FAR void *arg)
+{
+  g_wifi_event_cb = cb;
+  g_wifi_event_arg = arg;
+  return 0;
 }
 
 /****************************************************************************
