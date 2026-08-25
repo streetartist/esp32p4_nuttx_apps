@@ -36,6 +36,7 @@ struct c6net_state_s
   bool initialized;
   bool ifup;
   bool associated;
+  bool event_pending;
   uint8_t buf[C6NET_BUFSIZE] __attribute__((aligned(4)));
 };
 
@@ -56,6 +57,19 @@ static void c6net_rxwork(FAR void *arg)
 
   if (priv->initialized)
     {
+      if (priv->event_pending)
+        {
+          priv->event_pending = false;
+          if (priv->associated && priv->ifup)
+            {
+              netdev_carrier_on(&priv->dev);
+            }
+          else
+            {
+              netdev_carrier_off(&priv->dev);
+            }
+        }
+
       while (esp_hosted_poll() > 0)
         {
         }
@@ -114,14 +128,7 @@ static void c6net_wifi_event(FAR void *arg, bool connected)
   FAR struct c6net_state_s *priv = arg;
 
   priv->associated = connected;
-  if (connected && priv->ifup)
-    {
-      netdev_carrier_on(&priv->dev);
-    }
-  else
-    {
-      netdev_carrier_off(&priv->dev);
-    }
+  priv->event_pending = true;
 }
 
 static void c6net_rx(FAR void *arg, uint8_t if_num,
