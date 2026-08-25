@@ -1,0 +1,24 @@
+config SYSTEM_C6PROBE
+	tristate "ESP32-C6 ESP-Hosted SDIO probe"
+	default n
+	depends on ARCH_CHIP_ESP32P4 && ESP32P4_SDMMC
+	---help---
+		Enable the c6probe NSH command.  It resets the on-board ESP32-C6
+		and verifies the ESP-Hosted SDIO Function 1 link without starting
+		Wi-Fi or Bluetooth.
+
+if SYSTEM_C6PROBE
+
+config SYSTEM_C6PROBE_PROGNAME
+	string "c6probe program name"
+	default "c6probe"
+
+config SYSTEM_C6PROBE_PRIORITY
+	int "c6probe task priority"
+	default 100
+
+config SYSTEM_C6PROBE_STACKSIZE
+	int "c6probe stack size"
+	default 4096
+
+endif
