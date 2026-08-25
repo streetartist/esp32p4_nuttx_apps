@@ -220,6 +220,7 @@ int c6net_initialize(FAR const char *ssid, FAR const char *password)
   priv->dev.d_ifname[0] = 'e';
   priv->dev.d_ifname[1] = 't';
   priv->dev.d_ifname[2] = 'h';
+  priv->dev.d_ifname[3] = '0';
   priv->dev.d_llhdrlen = 14;
   priv->dev.d_pktsize = CONFIG_NET_ETH_PKTSIZE;
   priv->dev.d_buf = priv->buf;
