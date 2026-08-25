@@ -18,6 +18,10 @@
 #include <string.h>
 #include <unistd.h>
 
+#ifdef CONFIG_NETUTILS_DHCPC
+#  include <netutils/netlib.h>
+#endif
+
 #include "esp_hosted.h"
 #include "c6net.h"
 
@@ -61,6 +65,15 @@ int main(int argc, FAR char *argv[])
       printf("c6probe: network init ret=%d\n", ret);
       return ret < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
     }
+
+#ifdef CONFIG_NETUTILS_DHCPC
+  if (argc > 1 && strcmp(argv[1], "dhcp") == 0)
+    {
+      ret = netlib_obtain_ipv4addr(argc > 2 ? argv[2] : "eth0");
+      printf("c6probe: DHCP ret=%d\n", ret);
+      return ret < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
+    }
+#endif
 
   /* connect [<ssid> [<password>]] associates with an AP.  Credentials are
    * given on the command line so they are never compiled into the image.
