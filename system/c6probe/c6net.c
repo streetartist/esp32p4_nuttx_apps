@@ -113,7 +113,6 @@ static void c6net_wifi_event(FAR void *arg, bool connected)
 {
   FAR struct c6net_state_s *priv = arg;
 
-  netdev_lock(&priv->dev);
   priv->associated = connected;
   if (connected && priv->ifup)
     {
@@ -123,7 +122,6 @@ static void c6net_wifi_event(FAR void *arg, bool connected)
     {
       netdev_carrier_off(&priv->dev);
     }
-  netdev_unlock(&priv->dev);
 }
 
 static void c6net_rx(FAR void *arg, uint8_t if_num,
