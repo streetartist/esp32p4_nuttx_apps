@@ -12,6 +12,8 @@
 #include <nuttx/config.h>
 
 #include <inttypes.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,8 +24,46 @@
 #  include <netutils/netlib.h>
 #endif
 
+#ifdef CONFIG_NETDB_DNSCLIENT
+#  include <nuttx/net/dns.h>
+#endif
+
 #include "esp_hosted.h"
 #include "c6net.h"
+
+#ifdef CONFIG_NETDB_DNSCLIENT
+static int c6probe_dns_print(FAR void *arg, FAR struct sockaddr *addr,
+                             socklen_t addrlen)
+{
+  char text[INET6_ADDRSTRLEN];
+  FAR const void *src;
+
+  UNUSED(arg);
+  UNUSED(addrlen);
+
+  if (addr->sa_family == AF_INET)
+    {
+      src = &((FAR struct sockaddr_in *)addr)->sin_addr;
+    }
+#ifdef CONFIG_NET_IPv6
+  else if (addr->sa_family == AF_INET6)
+    {
+      src = &((FAR struct sockaddr_in6 *)addr)->sin6_addr;
+    }
+#endif
+  else
+    {
+      return 0;
+    }
+
+  if (inet_ntop(addr->sa_family, src, text, sizeof(text)) != NULL)
+    {
+      printf("c6probe: DNS %s\n", text);
+    }
+
+  return 0;
+}
+#endif
 
 int main(int argc, FAR char *argv[])
 {
@@ -71,6 +111,33 @@ int main(int argc, FAR char *argv[])
     {
       ret = netlib_obtain_ipv4addr(argc > 2 ? argv[2] : "eth0");
       printf("c6probe: DHCP ret=%d\n", ret);
+      return ret < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
+    }
+#endif
+
+#ifdef CONFIG_NETDB_DNSCLIENT
+  if (argc > 1 && strcmp(argv[1], "dns") == 0)
+    {
+      if (argc > 2)
+        {
+          struct in_addr addr;
+
+          if (inet_pton(AF_INET, argv[2], &addr) != 1)
+            {
+              fprintf(stderr, "c6probe: invalid DNS address\n");
+              return EXIT_FAILURE;
+            }
+
+          ret = netlib_set_ipv4dnsaddr(&addr);
+          if (ret < 0)
+            {
+              fprintf(stderr, "c6probe: set DNS failed: %d\n", ret);
+              return EXIT_FAILURE;
+            }
+        }
+
+      ret = dns_foreach_nameserver(c6probe_dns_print, NULL);
+      printf("c6probe: DNS entries=%d\n", ret);
       return ret < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
     }
 #endif
