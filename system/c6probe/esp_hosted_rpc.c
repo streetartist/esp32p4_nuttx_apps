@@ -591,6 +591,8 @@ int esp_hosted_rpc_wifi_connect(FAR const char *ssid, FAR const char *pwd)
   uint8_t ssid_buf[32] = {0};
   uint8_t password_buf[64] = {0};
   WifiStaConfig sta = WIFI_STA_CONFIG__INIT;
+  WifiScanThreshold threshold = WIFI_SCAN_THRESHOLD__INIT;
+  WifiPmfConfig pmf_cfg = WIFI_PMF_CONFIG__INIT;
   WifiConfig cfg = WIFI_CONFIG__INIT;
   RpcReqWifiSetConfig set_payload = RPC__REQ__WIFI_SET_CONFIG__INIT;
   RpcReqWifiConnect conn_payload = RPC__REQ__WIFI_CONNECT__INIT;
@@ -612,9 +614,11 @@ int esp_hosted_rpc_wifi_connect(FAR const char *ssid, FAR const char *pwd)
       memcpy(ssid_buf, ssid, strlen(ssid));
       memcpy(password_buf, pwd, strlen(pwd));
       sta.ssid.data = ssid_buf;
-      sta.ssid.len  = sizeof(ssid_buf);
+      sta.ssid.len  = strlen(ssid) + 1;
       sta.password.data = password_buf;
-      sta.password.len  = sizeof(password_buf);
+      sta.password.len  = strlen(pwd) + 1;
+      sta.threshold = &threshold;
+      sta.pmf_cfg = &pmf_cfg;
 
       cfg.u_case = WIFI_CONFIG__U_STA;
       cfg.sta = &sta;

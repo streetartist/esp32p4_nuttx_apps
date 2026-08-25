@@ -609,61 +609,14 @@ static int hosted_do_read_block(FAR struct sdio_dev_s *sdio,
 static int hosted_do_write_block(FAR struct sdio_dev_s *sdio,
                                  uint32_t address, uint32_t transfer_len)
 {
-  sdio_eventset_t event;
-  uint32_t arg;
-  uint32_t response;
-  int ret;
-
-  /* Bit 31 is the CMD53 R/W flag and must be set for a write: the NuttX
-   * command selects the host controller's data direction, but the card
-   * itself only looks at this bit.  Leaving it clear makes the C6 treat the
-   * incoming block as a read, which wedges its SDIO function - every later
-   * CMD52 then reads back as zero.
+  /* Use NuttX's standard CMD53 byte-mode path for short ESP-Hosted frames.
+   * Passing nblocks=0 selects byte mode while preserving the real transfer
+   * length and address.  The helper also performs the controller-specific
+   * DMA setup, event wait, R5 handling, and abort cleanup.
    */
 
-  /* TX frames are smaller than one SDIO block.  Use CMD53 byte mode so the
-   * transfer ends at END_ADDR instead of writing a whole 512-byte block past
-   * the slave's window.  The length has already been rounded to four bytes.
-   */
-
-  arg = transfer_len |
-        ((address & 0x1ffff) << 9) |
-        (1u << 26) |
-        ((uint32_t)C6_SDIO_FUNCTION << 28) |
-        (1u << 31);
-
-  SDIO_BLOCKSETUP(sdio, transfer_len, 1);
-  SDIO_WAITENABLE(sdio,
-                  SDIOWAIT_TRANSFERDONE | SDIOWAIT_TIMEOUT | SDIOWAIT_ERROR,
-                  1000);
-
-  ret = SDIO_DMASENDSETUP(sdio, g_dma_block, transfer_len);
-  if (ret < 0)
-    {
-      SDIO_CANCEL(sdio);
-      return ret;
-    }
-
-  ret = SDIO_SENDCMD(sdio, SDIO_CMD53WR, arg);
-  if (ret < 0)
-    {
-      SDIO_CANCEL(sdio);
-      return ret;
-    }
-
-  event = SDIO_EVENTWAIT(sdio);
-  ret = SDIO_RECVR5(sdio, SDIO_CMD53WR, &response);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  if ((event & (SDIOWAIT_TIMEOUT | SDIOWAIT_ERROR)) != 0)
-    {
-      return (event & SDIOWAIT_TIMEOUT) != 0 ? -ETIMEDOUT : -EIO;
-    }
-
-  return OK;
+  return sdio_io_rw_extended(sdio, true, C6_SDIO_FUNCTION, address, true,
+                             g_dma_block, transfer_len, 0);
 }
 
 /****************************************************************************
