@@ -216,6 +216,32 @@ out:
   return ret;
 }
 
+int qpk_net_prepare(void)
+{
+  int ca_ret;
+  int time_ret = 0;
+
+#ifdef CONFIG_NETUTILS_NTPCLIENT
+  if (time(NULL) < QPK_TLS_MIN_TIME)
+    {
+      /* ntpc_start() waits only until the NTP task is running.  The actual
+       * synchronization continues in that task while the user navigates
+       * the desktop. */
+
+      time_ret = ntpc_start();
+      if (time_ret >= 0)
+        {
+          time_ret = 0;
+        }
+    }
+#endif
+
+  /* Parse the trust bundle outside the first fetch worker. */
+
+  ca_ret = qpk_ca_init();
+  return time_ret < 0 ? time_ret : ca_ret;
+}
+
 static int qpk_connect(const char *host, const char *port, int timeout_ms)
 {
   struct addrinfo hints;

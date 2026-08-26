@@ -35,6 +35,7 @@
 #endif
 
 #include "qpk_runtime.h"
+#include "qpk_net.h"
 
 #define QPK_DIR       CONFIG_SYSTEM_DESKTOP_QPK_DIR
 #define MAX_QPK       8
@@ -351,6 +352,12 @@ static int wifi_connect_worker(int argc, FAR char *argv[])
         {
           (void)inet_ntop(AF_INET, &addr, ip, sizeof(ip));
         }
+
+      /* NTP and CA setup begin as soon as DHCP has installed IP, route and
+       * DNS state, instead of charging that cold-start cost to the first
+       * weather HTTPS request. */
+
+      (void)qpk_net_prepare();
 
       if (wifi_finish(generation, WIFI_STATE_CONNECTED, 0, ip))
         {

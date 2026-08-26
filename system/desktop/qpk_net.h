@@ -2,6 +2,9 @@
 
 #include "quickjs.h"
 
+/* Start one-time network preparation before the first HTTPS request. */
+int qpk_net_prepare(void);
+
 /* Install the network-facing quick-app compatibility API. */
 int qpk_net_install(JSContext *ctx);
 
