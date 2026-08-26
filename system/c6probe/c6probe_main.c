@@ -18,11 +18,71 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <errno.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #ifdef CONFIG_NETUTILS_DHCPC
 #  include <netutils/netlib.h>
 #endif
+
+static int c6probe_tcp(FAR const char *host, FAR const char *service)
+{
+  struct addrinfo hints;
+  FAR struct addrinfo *res = NULL;
+  struct timeval tv;
+  char request[] = "GET / HTTP/1.0\r\nHost: test\r\n\r\n";
+  unsigned char buffer[256];
+  int fd;
+  int ret;
+  ssize_t n;
+
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+  ret = getaddrinfo(host, service, &hints, &res);
+  if (ret != 0 || res == NULL)
+    {
+      printf("c6probe: tcp DNS failed host=%s ret=%d\n", host, ret);
+      return -EHOSTUNREACH;
+    }
+
+  fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+  if (fd < 0)
+    {
+      ret = -errno;
+      freeaddrinfo(res);
+      return ret;
+    }
+
+  tv.tv_sec = 5;
+  tv.tv_usec = 0;
+  (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+  ret = connect(fd, res->ai_addr, res->ai_addrlen);
+  printf("c6probe: tcp connect host=%s port=%s ret=%d errno=%d\n",
+         host, service, ret, ret < 0 ? errno : 0);
+  if (ret == 0)
+    {
+      n = send(fd, request, sizeof(request) - 1, 0);
+      printf("c6probe: tcp send bytes=%ld errno=%d\n",
+             (long)n, n < 0 ? errno : 0);
+      n = recv(fd, buffer, sizeof(buffer), 0);
+      printf("c6probe: tcp recv bytes=%ld errno=%d\n",
+             (long)n, n < 0 ? errno : 0);
+      if (n > 0)
+        {
+          printf("c6probe: tcp recv head=%02x %02x %02x %02x\n",
+                 buffer[0], buffer[1], buffer[2], buffer[3]);
+        }
+    }
+
+  close(fd);
+  freeaddrinfo(res);
+  return ret;
+}
 
 #ifdef CONFIG_NETDB_DNSCLIENT
 #  include <nuttx/net/dns.h>
@@ -103,6 +163,13 @@ int main(int argc, FAR char *argv[])
       ret = c6net_initialize(argc > 2 ? argv[2] : "",
                              argc > 3 ? argv[3] : "");
       printf("c6probe: network init ret=%d\n", ret);
+      return ret < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
+    }
+
+  if (argc > 1 && strcmp(argv[1], "tcp") == 0)
+    {
+      ret = c6probe_tcp(argc > 2 ? argv[2] : "uapis.cn",
+                        argc > 3 ? argv[3] : "443");
       return ret < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
     }
 

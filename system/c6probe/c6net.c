@@ -169,7 +169,15 @@ static void c6net_rx(FAR void *arg, uint8_t if_num,
     }
 #endif
 
-  priv->dev.d_len = 0;
+  /* NuttX returns protocol responses such as TCP ACKs and ARP replies in
+   * d_buf/d_len.  Ethernet drivers must transmit that response before
+   * releasing the network lock; dropping it stalls multi-segment streams. */
+
+  if (priv->dev.d_len > 0)
+    {
+      (void)c6net_txpoll(&priv->dev);
+    }
+
   netdev_unlock(&priv->dev);
 }
 

@@ -79,7 +79,7 @@
 #define ESP_HOSTED_HEADER_SIZE      12
 #define ESP_HOSTED_BLOCK_SIZE       512
 #define ESP_HOSTED_RX_BUFFER_SIZE   1536
-#define ESP_HOSTED_MAX_FRAME        2048
+#define ESP_HOSTED_MAX_FRAME        16384
 
 /****************************************************************************
  * Public Types

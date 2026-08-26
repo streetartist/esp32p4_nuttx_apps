@@ -597,6 +597,28 @@ static int hosted_do_read_block(FAR struct sdio_dev_s *sdio,
 }
 
 /****************************************************************************
+ * Name: hosted_do_read_tail
+ *
+ * Description:
+ *   Read the final, non-block-aligned portion of an ESP-Hosted frame.  The
+ *   slave pads this transfer to a 4-byte boundary; only the real bytes are
+ *   copied by the caller.  This is the same split used by the reference
+ *   ESP-Hosted SDIO driver.
+ ****************************************************************************/
+
+static int hosted_do_read_tail(FAR struct sdio_dev_s *sdio,
+                               uint32_t address, uint32_t length)
+{
+  uint32_t transfer_len;
+
+  transfer_len = (length + 3u) & ~3u;
+  memset(g_dma_block, 0, sizeof(g_dma_block));
+
+  return sdio_io_rw_extended(sdio, false, C6_SDIO_FUNCTION, address, true,
+                             g_dma_block, transfer_len, 0);
+}
+
+/****************************************************************************
  * Name: hosted_do_write_block
  *
  * Description:
@@ -759,6 +781,45 @@ static void hosted_dispatch(FAR uint8_t *frame, uint32_t framelen)
 }
 
 /****************************************************************************
+ * Name: hosted_dispatch_stream
+ *
+ * Description:
+ *   PACKET_LEN describes a byte stream and may contain several consecutive
+ *   ESP-Hosted frames.  Parse and dispatch every complete frame in the
+ *   stream, matching the reference driver's streaming RX path.
+ ****************************************************************************/
+
+static void hosted_dispatch_stream(FAR uint8_t *stream, uint32_t streamlen)
+{
+  uint32_t offset = 0;
+
+  while (streamlen - offset >= ESP_HOSTED_HEADER_SIZE)
+    {
+      FAR struct esp_hosted_header_s *hdr;
+      uint32_t packet_len;
+
+      hdr = (FAR struct esp_hosted_header_s *)(stream + offset);
+      packet_len = (uint32_t)hdr->offset + (uint32_t)hdr->len;
+      if (hdr->offset < ESP_HOSTED_HEADER_SIZE ||
+          packet_len > streamlen - offset)
+        {
+          syslog(LOG_ERR, "bad stream frame: off=%u len=%u rem=%" PRIu32 "\n",
+                 hdr->offset, hdr->len, streamlen - offset);
+          return;
+        }
+
+      hosted_dispatch(stream + offset, packet_len);
+      offset += packet_len;
+    }
+
+  if (offset != streamlen)
+    {
+      syslog(LOG_ERR, "trailing stream bytes: %" PRIu32 "\n",
+             streamlen - offset);
+    }
+}
+
+/****************************************************************************
  * Name: hosted_read_frame
  *
  * Description:
@@ -771,8 +832,8 @@ static void hosted_dispatch(FAR uint8_t *frame, uint32_t framelen)
 static int hosted_read_frame(FAR uint32_t *framelen)
 {
   uint32_t pending;
-  uint32_t total;
-  uint32_t chunk;
+  uint32_t data_left;
+  uint32_t offset;
   uint32_t address;
   int ret;
 
@@ -794,27 +855,42 @@ static int hosted_read_frame(FAR uint32_t *framelen)
       return -EMSGSIZE;
     }
 
-  /* The frame starts at END_ADDR minus its real length; the read is rounded
-   * up to whole blocks and the slave zero-pads the tail.
+  /* Read exactly as the reference host does: full 512-byte blocks use
+   * block-mode CMD53, while the final short portion uses byte mode.  A
+   * block-mode read for a short frame can consume the next frame's window
+   * and corrupt the transport on larger TCP/TLS responses.
    */
 
-  total = (pending + C6_SDIO_BLOCK_SIZE - 1) &
-          ~(uint32_t)(C6_SDIO_BLOCK_SIZE - 1);
-  address = C6_CMD53_END_ADDR - pending;
-  chunk = 0;
+  data_left = pending;
+  offset = 0;
 
-  while (chunk < total)
+  while (data_left >= C6_SDIO_BLOCK_SIZE)
     {
-      ret = hosted_do_read_block(g_hosted.sdio, address + chunk);
+      address = C6_CMD53_END_ADDR - data_left;
+      ret = hosted_do_read_block(g_hosted.sdio, address);
       if (ret < 0)
         {
           syslog(LOG_ERR, "block read at %" PRIx32 ": %d\n",
-                 address + chunk, ret);
+                 address, ret);
           return ret;
         }
 
-      memcpy(g_frame_buf + chunk, g_dma_block, C6_SDIO_BLOCK_SIZE);
-      chunk += C6_SDIO_BLOCK_SIZE;
+      memcpy(g_frame_buf + offset, g_dma_block, C6_SDIO_BLOCK_SIZE);
+      offset += C6_SDIO_BLOCK_SIZE;
+      data_left -= C6_SDIO_BLOCK_SIZE;
+    }
+
+  if (data_left != 0)
+    {
+      address = C6_CMD53_END_ADDR - data_left;
+      ret = hosted_do_read_tail(g_hosted.sdio, address, data_left);
+      if (ret < 0)
+        {
+          syslog(LOG_ERR, "tail read at %" PRIx32 ": %d\n", address, ret);
+          return ret;
+        }
+
+      memcpy(g_frame_buf + offset, g_dma_block, data_left);
     }
 
   g_hosted.rx_bytes = (g_hosted.rx_bytes + pending) % C6_RX_BYTE_MODULO;
@@ -986,7 +1062,7 @@ int esp_hosted_poll(void)
   /* Dispatch outside the lock so callbacks can send replies. */
 
   nxmutex_unlock(&g_hosted.lock);
-  hosted_dispatch(g_frame_buf, framelen);
+  hosted_dispatch_stream(g_frame_buf, framelen);
   return 1;
 }
 
