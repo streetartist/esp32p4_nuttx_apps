@@ -11,6 +11,7 @@ MODULE    = $(CONFIG_SYSTEM_DESKTOP)
 
 CFLAGS += -I$(APPDIR)/interpreters/quickjs/quickjs
 CFLAGS += -I$(APPDIR)/include
+CFLAGS += -I$(APPDIR)/system/c6probe
 
 CSRCS   = desktop_font.c qpk_runtime.c qpk_net.c
 ASRCS   = qpk_ca_bundle.S

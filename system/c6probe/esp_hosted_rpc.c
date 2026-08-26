@@ -127,7 +127,7 @@ static int rpc_tlv_compose(FAR uint8_t *buf, size_t buflen,
  *   both the response and the event endpoint.
  *
  * Returned Value:
- *   OK on success, with *payload/*paylen set; a negated errno otherwise.
+ *   OK on success, with payload and paylen set; a negated errno otherwise.
  *
  ****************************************************************************/
 
@@ -301,6 +301,7 @@ static FAR Rpc *rpc_transact(FAR const Rpc *req, FAR const char *label)
 
   printf("rpc: %s tx pb=%u tlv=%d\n", label, (unsigned int)packed, tlvlen);
 
+  if (strcmp(label, "WifiSetConfig") != 0)
     {
       size_t d;
 
@@ -311,6 +312,10 @@ static FAR Rpc *rpc_transact(FAR const Rpc *req, FAR const char *label)
         }
 
       printf("\n");
+    }
+  else
+    {
+      printf("rpc: WifiSetConfig pb bytes: <redacted>\n");
     }
 
   cli->wait_uid = req->uid;
@@ -616,6 +621,8 @@ int esp_hosted_rpc_wifi_connect(FAR const char *ssid, FAR const char *pwd)
   RpcReqWifiSetConfig set_payload = RPC__REQ__WIFI_SET_CONFIG__INIT;
   RpcReqWifiConnect conn_payload = RPC__REQ__WIFI_CONNECT__INIT;
   FAR Rpc *resp;
+  size_t password_len;
+  size_t ssid_len;
   int status;
 
   /* An empty SSID means "skip SetConfig and just associate", which is how the
@@ -625,17 +632,21 @@ int esp_hosted_rpc_wifi_connect(FAR const char *ssid, FAR const char *pwd)
 
   if (ssid != NULL && strlen(ssid) > 0)
     {
-      if (strlen(ssid) > 32 || pwd == NULL || strlen(pwd) > 64)
+      ssid_len = strlen(ssid);
+      password_len = pwd != NULL ? strlen(pwd) : 0;
+      if (ssid_len > sizeof(ssid_buf) || pwd == NULL ||
+          password_len > sizeof(password_buf))
         {
           return -EINVAL;
         }
 
-      memcpy(ssid_buf, ssid, strlen(ssid));
-      memcpy(password_buf, pwd, strlen(pwd));
+      memcpy(ssid_buf, ssid, ssid_len);
+      memcpy(password_buf, pwd, password_len);
       sta.ssid.data = ssid_buf;
-      sta.ssid.len  = strlen(ssid) + 1;
+      sta.ssid.len  = ssid_len < sizeof(ssid_buf) ? ssid_len + 1 : ssid_len;
       sta.password.data = password_buf;
-      sta.password.len  = strlen(pwd) + 1;
+      sta.password.len  = password_len < sizeof(password_buf) ?
+                          password_len + 1 : password_len;
       sta.threshold = &threshold;
       sta.pmf_cfg = &pmf_cfg;
 
@@ -752,8 +763,8 @@ int esp_hosted_rpc_get_mac(int wifi_if, uint8_t mac[6])
     }
 
   printf("rpc: GetMacAddress resp code=%d mac.len=%u\n",
-         resp->payload_case == RPC__PAYLOAD_RESP_GET_MAC_ADDRESS ?
-         resp->resp_get_mac_address->resp : -1,
+         (int)(resp->payload_case == RPC__PAYLOAD_RESP_GET_MAC_ADDRESS ?
+         resp->resp_get_mac_address->resp : -1),
          resp->payload_case == RPC__PAYLOAD_RESP_GET_MAC_ADDRESS ?
          (unsigned int)resp->resp_get_mac_address->mac.len : 0);
 

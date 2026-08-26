@@ -8,7 +8,12 @@
 
 #include <nuttx/config.h>
 
+#include <arpa/inet.h>
 #include <dirent.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <pthread.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +25,15 @@
 #include <nuttx/sched.h>
 #include <lvgl/lvgl.h>
 
+#if defined(CONFIG_NET) && defined(CONFIG_NETUTILS_DHCPC) && \
+    defined(CONFIG_SYSTEM_C6PROBE)
+#  include <netutils/netlib.h>
+#  include "c6net.h"
+#  define DESKTOP_WIFI_ENABLED 1
+#else
+#  define DESKTOP_WIFI_ENABLED 0
+#endif
+
 #include "qpk_runtime.h"
 
 #define QPK_DIR       CONFIG_SYSTEM_DESKTOP_QPK_DIR
@@ -28,6 +42,11 @@
 #define PANEL_WIDTH   760
 #define PANEL_HEIGHT  470
 #define QAPP_HEADER_HEIGHT  64
+#define WIFI_SSID_MAXLEN    32
+#define WIFI_PASSWORD_MAXLEN 64
+#define WIFI_ASSOCIATE_MS   20000
+#define WIFI_WORKER_PRIORITY 100
+#define WIFI_WORKER_STACK   6144
 
 extern const uint8_t g_desktop_font_start[];
 extern const uint8_t g_desktop_font_end[];
@@ -70,12 +89,18 @@ struct desktop_env_s
   lv_obj_t *screen;
   lv_obj_t *statusbar;
   lv_obj_t *clock_label;
+  lv_obj_t *wifi_icon;
   lv_obj_t *home_title;
   lv_obj_t *home_hint;
   lv_obj_t *grid;
   lv_obj_t *panel;
   lv_obj_t *current_card;
   lv_obj_t *toast;
+  lv_obj_t *wifi_status_label;
+  lv_obj_t *wifi_modal;
+  lv_obj_t *wifi_ssid_input;
+  lv_obj_t *wifi_password_input;
+  lv_obj_t *wifi_keyboard;
   lv_font_t *font16;
   lv_font_t *font20;
   lv_font_t *font28;
@@ -86,6 +111,44 @@ struct desktop_env_s
 };
 
 static struct desktop_env_s g_desktop;
+
+enum wifi_state_e
+{
+  WIFI_STATE_IDLE = 0,
+  WIFI_STATE_STARTING,
+  WIFI_STATE_ASSOCIATING,
+  WIFI_STATE_DHCP,
+  WIFI_STATE_CONNECTED,
+  WIFI_STATE_FAILED
+};
+
+struct wifi_manager_s
+{
+  pthread_mutex_t lock;
+  enum wifi_state_e state;
+  bool busy;
+  int result;
+  uint32_t generation;
+  char request_ssid[WIFI_SSID_MAXLEN + 1];
+  char request_password[WIFI_PASSWORD_MAXLEN + 1];
+  char active_ssid[WIFI_SSID_MAXLEN + 1];
+  char ip[INET_ADDRSTRLEN];
+};
+
+struct wifi_snapshot_s
+{
+  enum wifi_state_e state;
+  bool busy;
+  int result;
+  char ssid[WIFI_SSID_MAXLEN + 1];
+  char ip[INET_ADDRSTRLEN];
+};
+
+static struct wifi_manager_s g_wifi =
+{
+  .lock = PTHREAD_MUTEX_INITIALIZER,
+  .state = WIFI_STATE_IDLE,
+};
 
 enum builtin_id_e
 {
@@ -137,6 +200,220 @@ static uint32_t theme_card(void)
 static uint32_t theme_surface(void)
 {
   return g_desktop.light_theme ? 0xe8ebf2 : 0x222b40;
+}
+
+static void wifi_get_snapshot(FAR struct wifi_snapshot_s *snapshot)
+{
+  pthread_mutex_lock(&g_wifi.lock);
+  snapshot->state = g_wifi.state;
+  snapshot->busy = g_wifi.busy;
+  snapshot->result = g_wifi.result;
+  strlcpy(snapshot->ssid, g_wifi.active_ssid, sizeof(snapshot->ssid));
+  strlcpy(snapshot->ip, g_wifi.ip, sizeof(snapshot->ip));
+  pthread_mutex_unlock(&g_wifi.lock);
+}
+
+static bool wifi_set_progress(uint32_t generation,
+                              enum wifi_state_e state)
+{
+  bool current;
+
+  pthread_mutex_lock(&g_wifi.lock);
+  current = g_wifi.generation == generation;
+  if (current)
+    {
+      g_wifi.state = state;
+      g_wifi.result = 0;
+    }
+
+  pthread_mutex_unlock(&g_wifi.lock);
+  return current;
+}
+
+static bool wifi_finish(uint32_t generation, enum wifi_state_e state,
+                        int result, FAR const char *ip)
+{
+  bool current;
+
+  pthread_mutex_lock(&g_wifi.lock);
+  current = g_wifi.generation == generation;
+  if (current)
+    {
+      g_wifi.state = state;
+      g_wifi.result = result;
+      g_wifi.busy = false;
+      if (ip != NULL)
+        {
+          strlcpy(g_wifi.ip, ip, sizeof(g_wifi.ip));
+        }
+    }
+
+  pthread_mutex_unlock(&g_wifi.lock);
+  return current;
+}
+
+#if DESKTOP_WIFI_ENABLED
+static int wifi_connect_worker(int argc, FAR char *argv[])
+{
+  struct in_addr addr;
+  char ssid[WIFI_SSID_MAXLEN + 1];
+  char password[WIFI_PASSWORD_MAXLEN + 1];
+  char ip[INET_ADDRSTRLEN];
+  uint32_t generation;
+  int elapsed;
+  int ret;
+
+  LV_UNUSED(argc);
+  LV_UNUSED(argv);
+
+  for (;;)
+    {
+      pthread_mutex_lock(&g_wifi.lock);
+      generation = g_wifi.generation;
+      strlcpy(ssid, g_wifi.request_ssid, sizeof(ssid));
+      strlcpy(password, g_wifi.request_password, sizeof(password));
+      memset(g_wifi.request_password, 0, sizeof(g_wifi.request_password));
+      pthread_mutex_unlock(&g_wifi.lock);
+
+      if (!wifi_set_progress(generation, WIFI_STATE_STARTING))
+        {
+          memset(password, 0, sizeof(password));
+          continue;
+        }
+
+      ret = c6net_connect(ssid, password);
+      memset(password, 0, sizeof(password));
+      if (ret < 0)
+        {
+          if (wifi_finish(generation, WIFI_STATE_FAILED, ret, NULL))
+            {
+              return ret;
+            }
+
+          continue;
+        }
+
+      if (!wifi_set_progress(generation, WIFI_STATE_ASSOCIATING))
+        {
+          continue;
+        }
+
+      for (elapsed = 0; elapsed < WIFI_ASSOCIATE_MS; elapsed += 100)
+        {
+          if (!wifi_set_progress(generation, WIFI_STATE_ASSOCIATING))
+            {
+              break;
+            }
+
+          if (c6net_is_associated())
+            {
+              break;
+            }
+
+          usleep(100000);
+        }
+
+      if (!wifi_set_progress(generation, WIFI_STATE_ASSOCIATING))
+        {
+          continue;
+        }
+
+      if (!c6net_is_associated())
+        {
+          if (wifi_finish(generation, WIFI_STATE_FAILED,
+                          -ETIMEDOUT, NULL))
+            {
+              return -ETIMEDOUT;
+            }
+
+          continue;
+        }
+
+      if (!wifi_set_progress(generation, WIFI_STATE_DHCP))
+        {
+          continue;
+        }
+
+      ret = netlib_obtain_ipv4addr("eth0");
+      if (ret < 0)
+        {
+          ret = errno != 0 ? -errno : -EIO;
+          if (wifi_finish(generation, WIFI_STATE_FAILED, ret, NULL))
+            {
+              return ret;
+            }
+
+          continue;
+        }
+
+      ip[0] = '\0';
+      if (netlib_get_ipv4addr("eth0", &addr) == 0)
+        {
+          (void)inet_ntop(AF_INET, &addr, ip, sizeof(ip));
+        }
+
+      if (wifi_finish(generation, WIFI_STATE_CONNECTED, 0, ip))
+        {
+          return 0;
+        }
+    }
+}
+#endif
+
+static int wifi_start_connect(FAR const char *ssid,
+                              FAR const char *password)
+{
+#if DESKTOP_WIFI_ENABLED
+  pid_t pid;
+  uint32_t generation;
+  bool spawn;
+  int ret = 0;
+
+  if (ssid == NULL || password == NULL ||
+      strlen(ssid) > WIFI_SSID_MAXLEN ||
+      strlen(password) > WIFI_PASSWORD_MAXLEN)
+    {
+      return -EINVAL;
+    }
+
+  pthread_mutex_lock(&g_wifi.lock);
+  spawn = !g_wifi.busy;
+  g_wifi.busy = true;
+  g_wifi.state = WIFI_STATE_STARTING;
+  g_wifi.result = 0;
+  g_wifi.ip[0] = '\0';
+  g_wifi.generation++;
+  generation = g_wifi.generation;
+  strlcpy(g_wifi.request_ssid, ssid, sizeof(g_wifi.request_ssid));
+  memset(g_wifi.request_password, 0, sizeof(g_wifi.request_password));
+  strlcpy(g_wifi.request_password, password,
+          sizeof(g_wifi.request_password));
+  strlcpy(g_wifi.active_ssid, ssid, sizeof(g_wifi.active_ssid));
+
+  pthread_mutex_unlock(&g_wifi.lock);
+  if (!spawn)
+    {
+      return 0;
+    }
+
+  pid = task_create("wifi_connect", WIFI_WORKER_PRIORITY,
+                    WIFI_WORKER_STACK, wifi_connect_worker, NULL);
+  if (pid < 0)
+    {
+      ret = errno != 0 ? -errno : -EIO;
+      pthread_mutex_lock(&g_wifi.lock);
+      memset(g_wifi.request_password, 0, sizeof(g_wifi.request_password));
+      pthread_mutex_unlock(&g_wifi.lock);
+      (void)wifi_finish(generation, WIFI_STATE_FAILED, ret, NULL);
+      return ret;
+    }
+
+  return 0;
+#else
+  LV_UNUSED(ssid);
+  LV_UNUSED(password);
+  return -ENOSYS;
+#endif
 }
 
 static lv_obj_t *make_label(lv_obj_t *parent, const char *text,
@@ -289,10 +566,26 @@ static void apply_theme(void)
     }
 }
 
+static void wifi_modal_forget(void)
+{
+  g_desktop.wifi_modal = NULL;
+  g_desktop.wifi_ssid_input = NULL;
+  g_desktop.wifi_password_input = NULL;
+  g_desktop.wifi_keyboard = NULL;
+}
+
+static void panel_content_forget(void)
+{
+  g_desktop.wifi_status_label = NULL;
+  wifi_modal_forget();
+  g_desktop.toast = NULL;
+}
+
 static void panel_hide(lv_event_t *e)
 {
   LV_UNUSED(e);
   qpk_runtime_stop();
+  panel_content_forget();
   lv_obj_add_flag(g_desktop.panel, LV_OBJ_FLAG_HIDDEN);
   g_desktop.current_card = NULL;
 }
@@ -305,6 +598,7 @@ static lv_obj_t *panel_card(const char *title)
 
   qpk_runtime_stop();
   lv_obj_remove_flag(g_desktop.panel, LV_OBJ_FLAG_HIDDEN);
+  panel_content_forget();
   lv_obj_clean(g_desktop.panel);
   lv_obj_set_style_bg_color(g_desktop.panel, lv_color_hex(0x000000), 0);
   lv_obj_set_style_bg_opa(g_desktop.panel, LV_OPA_70, 0);
@@ -339,9 +633,11 @@ static lv_obj_t *panel_card(const char *title)
 
 static void toast_delete_cb(lv_timer_t *timer)
 {
-  if (g_desktop.toast != NULL)
+  lv_obj_t *toast = lv_timer_get_user_data(timer);
+
+  if (g_desktop.toast == toast)
     {
-      lv_obj_delete(g_desktop.toast);
+      lv_obj_delete(toast);
       g_desktop.toast = NULL;
     }
 
@@ -362,7 +658,7 @@ static void show_toast(const char *text)
   lv_obj_set_style_pad_hor(g_desktop.toast, 22, 0);
   lv_obj_set_style_pad_ver(g_desktop.toast, 12, 0);
   lv_obj_align(g_desktop.toast, LV_ALIGN_BOTTOM_MID, 0, -34);
-  lv_timer_create(toast_delete_cb, 1600, NULL);
+  lv_timer_create(toast_delete_cb, 1600, g_desktop.toast);
 }
 
 static const char g_hello_qpk_js[] =
@@ -578,6 +874,7 @@ static lv_obj_t *qapp_page(const char *title)
 
   qpk_runtime_stop();
   lv_obj_remove_flag(g_desktop.panel, LV_OBJ_FLAG_HIDDEN);
+  panel_content_forget();
   lv_obj_clean(g_desktop.panel);
   lv_obj_set_style_bg_color(g_desktop.panel,
                             lv_color_hex(theme_card()), 0);
@@ -774,16 +1071,274 @@ static void setting_row(lv_obj_t *parent, const char *title,
   lv_obj_add_event_cb(sw, cb, LV_EVENT_VALUE_CHANGED, NULL);
 }
 
+static void wifi_status_text(FAR const struct wifi_snapshot_s *snapshot,
+                             FAR char *text, size_t textlen)
+{
+  FAR const char *network = snapshot->ssid[0] != '\0' ?
+                            snapshot->ssid : "已保存的网络";
+
+  switch (snapshot->state)
+    {
+      case WIFI_STATE_STARTING:
+        strlcpy(text, "正在启动无线网络…", textlen);
+        break;
+      case WIFI_STATE_ASSOCIATING:
+        snprintf(text, textlen, "正在连接 %s…", network);
+        break;
+      case WIFI_STATE_DHCP:
+        strlcpy(text, "已关联，正在获取 IP 地址…", textlen);
+        break;
+      case WIFI_STATE_CONNECTED:
+        if (snapshot->ip[0] != '\0')
+          {
+            snprintf(text, textlen, "%s · %s", network, snapshot->ip);
+          }
+        else
+          {
+            snprintf(text, textlen, "%s · 已连接", network);
+          }
+        break;
+      case WIFI_STATE_FAILED:
+        snprintf(text, textlen, "连接失败（%d）", snapshot->result);
+        break;
+      case WIFI_STATE_IDLE:
+      default:
+#if DESKTOP_WIFI_ENABLED
+        strlcpy(text, "尚未连接", textlen);
+#else
+        strlcpy(text, "当前固件未启用 Wi-Fi", textlen);
+#endif
+        break;
+    }
+}
+
+static void wifi_ui_timer_cb(lv_timer_t *timer)
+{
+  struct wifi_snapshot_s snapshot;
+  uint32_t color;
+  char text[128];
+
+  LV_UNUSED(timer);
+  wifi_get_snapshot(&snapshot);
+  wifi_status_text(&snapshot, text, sizeof(text));
+
+  if (snapshot.state == WIFI_STATE_CONNECTED)
+    {
+      color = 0x55d6a7;
+    }
+  else if (snapshot.state == WIFI_STATE_FAILED)
+    {
+      color = 0xf06f75;
+    }
+  else if (snapshot.busy)
+    {
+      color = 0xf2b56b;
+    }
+  else
+    {
+      color = 0x9aa7cc;
+    }
+
+  if (g_desktop.wifi_icon != NULL)
+    {
+      lv_obj_set_style_text_color(g_desktop.wifi_icon,
+                                  lv_color_hex(color), 0);
+    }
+
+  if (g_desktop.wifi_status_label != NULL)
+    {
+      lv_label_set_text(g_desktop.wifi_status_label, text);
+      lv_obj_set_style_text_color(g_desktop.wifi_status_label,
+                                  lv_color_hex(color), 0);
+    }
+}
+
+static void wifi_input_focused(lv_event_t *e)
+{
+  if (g_desktop.wifi_keyboard != NULL)
+    {
+      lv_keyboard_set_textarea(g_desktop.wifi_keyboard,
+                               lv_event_get_target(e));
+    }
+}
+
+static void wifi_modal_close(lv_event_t *e)
+{
+  lv_obj_t *modal = g_desktop.wifi_modal;
+
+  LV_UNUSED(e);
+  wifi_modal_forget();
+  if (modal != NULL)
+    {
+      lv_obj_delete(modal);
+    }
+}
+
+static void wifi_connect_clicked(lv_event_t *e)
+{
+  FAR const char *password_text;
+  FAR const char *ssid_text;
+  char ssid[WIFI_SSID_MAXLEN + 1];
+  char password[WIFI_PASSWORD_MAXLEN + 1];
+  int ret;
+
+  LV_UNUSED(e);
+  if (g_desktop.wifi_ssid_input == NULL ||
+      g_desktop.wifi_password_input == NULL)
+    {
+      return;
+    }
+
+  ssid_text = lv_textarea_get_text(g_desktop.wifi_ssid_input);
+  password_text = lv_textarea_get_text(g_desktop.wifi_password_input);
+  if (ssid_text[0] == '\0')
+    {
+      show_toast("请输入 Wi-Fi 名称");
+      return;
+    }
+
+  if (strlen(ssid_text) > WIFI_SSID_MAXLEN ||
+      strlen(password_text) > WIFI_PASSWORD_MAXLEN)
+    {
+      show_toast("Wi-Fi 名称或密码过长");
+      return;
+    }
+
+  strlcpy(ssid, ssid_text, sizeof(ssid));
+  strlcpy(password, password_text, sizeof(password));
+
+  ret = wifi_start_connect(ssid, password);
+  memset(password, 0, sizeof(password));
+  if (ret < 0)
+    {
+      show_toast(ret == -EBUSY ? "正在连接，请稍候" : "无法启动 Wi-Fi 连接");
+      return;
+    }
+
+  wifi_modal_close(NULL);
+  show_toast("正在连接 Wi-Fi");
+}
+
+static void wifi_config_clicked(lv_event_t *e)
+{
+  struct wifi_snapshot_s snapshot;
+  lv_obj_t *modal;
+  lv_obj_t *dialog;
+  lv_obj_t *label;
+  lv_obj_t *button;
+
+  LV_UNUSED(e);
+  if (g_desktop.wifi_modal != NULL)
+    {
+      return;
+    }
+
+  wifi_get_snapshot(&snapshot);
+  modal = lv_obj_create(g_desktop.panel);
+  g_desktop.wifi_modal = modal;
+  lv_obj_set_size(modal, lv_pct(100), lv_pct(100));
+  lv_obj_set_style_bg_color(modal, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(modal, LV_OPA_80, 0);
+  lv_obj_set_style_border_width(modal, 0, 0);
+  lv_obj_set_style_radius(modal, 0, 0);
+  lv_obj_set_style_pad_all(modal, 0, 0);
+  lv_obj_remove_flag(modal, LV_OBJ_FLAG_SCROLLABLE);
+
+  dialog = lv_obj_create(modal);
+  lv_obj_set_size(dialog, 700, 315);
+  lv_obj_align(dialog, LV_ALIGN_TOP_MID, 0, 10);
+  lv_obj_set_style_bg_color(dialog, lv_color_hex(theme_card()), 0);
+  lv_obj_set_style_border_color(dialog,
+                                lv_color_hex(g_desktop.light_theme ?
+                                             0xcbd1dd : 0x35415e), 0);
+  lv_obj_set_style_radius(dialog, 16, 0);
+  lv_obj_remove_flag(dialog, LV_OBJ_FLAG_SCROLLABLE);
+
+  label = make_label(dialog, "连接 Wi-Fi", theme_primary(), 28);
+  lv_obj_set_pos(label, 20, 8);
+
+  label = make_label(dialog, "网络名称", theme_secondary(), 16);
+  lv_obj_set_pos(label, 22, 66);
+  g_desktop.wifi_ssid_input = lv_textarea_create(dialog);
+  lv_obj_set_size(g_desktop.wifi_ssid_input, 510, 48);
+  lv_obj_set_pos(g_desktop.wifi_ssid_input, 145, 54);
+  lv_textarea_set_one_line(g_desktop.wifi_ssid_input, true);
+  lv_textarea_set_max_length(g_desktop.wifi_ssid_input, WIFI_SSID_MAXLEN);
+  lv_textarea_set_placeholder_text(g_desktop.wifi_ssid_input, "SSID");
+  lv_textarea_set_text(g_desktop.wifi_ssid_input, snapshot.ssid);
+  lv_obj_set_style_text_font(g_desktop.wifi_ssid_input, zh_font(20), 0);
+  lv_obj_add_event_cb(g_desktop.wifi_ssid_input, wifi_input_focused,
+                      LV_EVENT_FOCUSED, NULL);
+
+  label = make_label(dialog, "密码", theme_secondary(), 16);
+  lv_obj_set_pos(label, 22, 128);
+  g_desktop.wifi_password_input = lv_textarea_create(dialog);
+  lv_obj_set_size(g_desktop.wifi_password_input, 510, 48);
+  lv_obj_set_pos(g_desktop.wifi_password_input, 145, 116);
+  lv_textarea_set_one_line(g_desktop.wifi_password_input, true);
+  lv_textarea_set_max_length(g_desktop.wifi_password_input,
+                             WIFI_PASSWORD_MAXLEN);
+  lv_textarea_set_password_mode(g_desktop.wifi_password_input, true);
+  lv_textarea_set_placeholder_text(g_desktop.wifi_password_input,
+                                   "Wi-Fi 密码");
+  lv_obj_set_style_text_font(g_desktop.wifi_password_input, zh_font(20), 0);
+  lv_obj_add_event_cb(g_desktop.wifi_password_input, wifi_input_focused,
+                      LV_EVENT_FOCUSED, NULL);
+
+  button = lv_button_create(dialog);
+  lv_obj_set_size(button, 150, 48);
+  lv_obj_set_pos(button, 345, 192);
+  lv_obj_set_style_bg_color(button, lv_color_hex(theme_surface()), 0);
+  lv_obj_add_event_cb(button, wifi_modal_close, LV_EVENT_CLICKED, NULL);
+  label = make_label(button, "取消", theme_primary(), 20);
+  lv_obj_center(label);
+
+  button = lv_button_create(dialog);
+  lv_obj_set_size(button, 150, 48);
+  lv_obj_set_pos(button, 505, 192);
+  lv_obj_set_style_bg_color(button, lv_color_hex(0x5267d8), 0);
+  lv_obj_add_event_cb(button, wifi_connect_clicked, LV_EVENT_CLICKED, NULL);
+  label = make_label(button, LV_SYMBOL_WIFI " 连接", 0xffffff, 20);
+  lv_obj_center(label);
+
+  g_desktop.wifi_keyboard = lv_keyboard_create(modal);
+  lv_obj_set_size(g_desktop.wifi_keyboard, lv_pct(100), 255);
+  lv_obj_align(g_desktop.wifi_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_keyboard_set_textarea(g_desktop.wifi_keyboard,
+                           g_desktop.wifi_ssid_input);
+}
+
 static void settings_clicked(lv_event_t *e)
 {
   lv_obj_t *card;
+  lv_obj_t *button;
   lv_obj_t *label;
   char info[256];
+  char status[128];
+  struct wifi_snapshot_s snapshot;
 
   LV_UNUSED(e);
   card = panel_card("设置");
   setting_row(card, "浅色桌面", "切换桌面背景与应用卡片", 82,
               g_desktop.light_theme, theme_changed);
+
+  label = make_label(card, "Wi-Fi", theme_primary(), 20);
+  lv_obj_set_pos(label, 28, 164);
+  wifi_get_snapshot(&snapshot);
+  wifi_status_text(&snapshot, status, sizeof(status));
+  g_desktop.wifi_status_label = make_label(card, status,
+                                            theme_secondary(), 16);
+  lv_label_set_long_mode(g_desktop.wifi_status_label, LV_LABEL_LONG_DOT);
+  lv_obj_set_size(g_desktop.wifi_status_label, 480, 28);
+  lv_obj_set_pos(g_desktop.wifi_status_label, 28, 194);
+
+  button = lv_button_create(card);
+  lv_obj_set_size(button, 150, 50);
+  lv_obj_set_pos(button, 558, 166);
+  lv_obj_set_style_bg_color(button, lv_color_hex(0x5267d8), 0);
+  lv_obj_add_event_cb(button, wifi_config_clicked, LV_EVENT_CLICKED, NULL);
+  label = make_label(button, "配置", 0xffffff, 20);
+  lv_obj_center(label);
 
   snprintf(info, sizeof(info),
            "设备信息\nESP32-P4 Function-EV-Board\n"
@@ -791,7 +1346,9 @@ static void settings_clicked(lv_event_t *e)
            "NuttX 桌面 · 已发现 %d 个外部 QPK",
            g_desktop.nqpk);
   label = make_label(card, info, theme_secondary(), 16);
-  lv_obj_set_pos(label, 28, 190);
+  lv_obj_set_pos(label, 28, 270);
+
+  wifi_ui_timer_cb(NULL);
 }
 
 static void about_clicked(lv_event_t *e)
@@ -886,8 +1443,16 @@ static lv_obj_t *statusbar_create(lv_obj_t *parent)
 
   label = make_label(bar, "NuttX 桌面", 0x91a2ff, 20);
   lv_obj_align(label, LV_ALIGN_LEFT_MID, 14, 0);
+  g_desktop.wifi_icon = lv_label_create(bar);
+  lv_label_set_text(g_desktop.wifi_icon, LV_SYMBOL_WIFI);
+  lv_obj_set_style_text_font(g_desktop.wifi_icon,
+                             &lv_font_montserrat_24, 0);
+  lv_obj_set_style_text_color(g_desktop.wifi_icon,
+                              lv_color_hex(0x9aa7cc), 0);
+  lv_obj_align(g_desktop.wifi_icon, LV_ALIGN_RIGHT_MID, -132, 0);
+
   label = lv_label_create(bar);
-  lv_label_set_text(label, LV_SYMBOL_WIFI "  " LV_SYMBOL_CHARGE);
+  lv_label_set_text(label, LV_SYMBOL_CHARGE);
   lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
   lv_obj_set_style_text_color(label, lv_color_hex(0x9aa7cc), 0);
   lv_obj_align(label, LV_ALIGN_RIGHT_MID, -104, 0);
@@ -949,7 +1514,9 @@ static void desktop_ui_create(void)
   lv_obj_add_flag(g_desktop.panel, LV_OBJ_FLAG_HIDDEN);
 
   lv_timer_create(clock_timer_cb, 1000, NULL);
+  lv_timer_create(wifi_ui_timer_cb, 500, NULL);
   clock_timer_cb(NULL);
+  wifi_ui_timer_cb(NULL);
 }
 
 int main(int argc, FAR char *argv[])
@@ -995,6 +1562,11 @@ int main(int argc, FAR char *argv[])
 
   desktop_ui_create();
   lv_refr_now(result.disp);
+
+  if (wifi_start_connect("", "") < 0)
+    {
+      fprintf(stderr, "desktop: Wi-Fi auto-connect unavailable\n");
+    }
 
 #ifdef CONFIG_SYSTEM_NSH
   if (task_create("nsh", 100, 4096, nsh_main, NULL) < 0)

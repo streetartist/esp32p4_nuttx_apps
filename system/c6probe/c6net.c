@@ -10,6 +10,7 @@
 
 #include <errno.h>
 #include <net/if.h>
+#include <pthread.h>
 #include <sched.h>
 #include <stdio.h>
 #include <string.h>
@@ -36,14 +37,16 @@ struct c6net_state_s
 {
   struct net_driver_s dev;
   pid_t daemon_pid;
-  bool initialized;
+  volatile bool initialized;
   bool ifup;
-  bool associated;
-  bool event_pending;
+  volatile bool associated;
+  volatile bool carrier_ready;
+  volatile bool event_pending;
   uint8_t buf[C6NET_BUFSIZE] __attribute__((aligned(4)));
 };
 
 static struct c6net_state_s g_c6net;
+static pthread_mutex_t g_c6net_connect_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int c6net_daemon(int argc, FAR char *argv[])
 {
@@ -60,9 +63,11 @@ static int c6net_daemon(int argc, FAR char *argv[])
           if (priv->associated && priv->ifup)
             {
               netdev_carrier_on(&priv->dev);
+              priv->carrier_ready = true;
             }
           else
             {
+              priv->carrier_ready = false;
               netdev_carrier_off(&priv->dev);
             }
         }
@@ -100,6 +105,7 @@ static int c6net_ifup(FAR struct net_driver_s *dev)
   if (g_c6net.associated)
     {
       netdev_carrier_on(dev);
+      g_c6net.carrier_ready = true;
     }
   return 0;
 }
@@ -107,6 +113,7 @@ static int c6net_ifup(FAR struct net_driver_s *dev)
 static int c6net_ifdown(FAR struct net_driver_s *dev)
 {
   dev->d_flags &= ~(IFF_UP | IFF_RUNNING);
+  g_c6net.carrier_ready = false;
   netdev_carrier_off(dev);
   return 0;
 }
@@ -128,6 +135,11 @@ static void c6net_wifi_event(FAR void *arg, bool connected)
   FAR struct c6net_state_s *priv = arg;
 
   priv->associated = connected;
+  if (!connected)
+    {
+      priv->carrier_ready = false;
+    }
+
   priv->event_pending = true;
 }
 
@@ -185,47 +197,52 @@ int c6net_initialize(FAR const char *ssid, FAR const char *password)
 {
   FAR struct c6net_state_s *priv = &g_c6net;
   uint8_t mac[6];
+  int lockret;
   int ret;
+
+  lockret = pthread_mutex_lock(&g_c6net_connect_lock);
+  if (lockret != 0)
+    {
+      return -lockret;
+    }
 
   if (priv->initialized)
     {
-      return 0;
+      priv->associated = false;
+      priv->carrier_ready = false;
+      priv->event_pending = true;
+      ret = esp_hosted_rpc_wifi_connect(ssid, password);
+      goto out;
     }
 
   ret = esp_hosted_initialize(false);
   if (ret < 0)
     {
-      return ret;
+      goto out;
     }
 
   ret = esp_hosted_rpc_wifi_init();
   if (ret < 0)
     {
-      return ret;
+      goto out;
     }
 
   ret = esp_hosted_rpc_wifi_set_mode(1);
   if (ret < 0)
     {
-      return ret;
+      goto out;
     }
 
   ret = esp_hosted_rpc_wifi_start();
   if (ret < 0)
     {
-      return ret;
-    }
-
-  ret = esp_hosted_rpc_wifi_connect(ssid, password);
-  if (ret < 0)
-    {
-      return ret;
+      goto out;
     }
 
   ret = esp_hosted_rpc_get_mac(0, mac);
   if (ret < 0)
     {
-      return ret;
+      goto out;
     }
 
   memset(priv, 0, sizeof(*priv));
@@ -245,19 +262,19 @@ int c6net_initialize(FAR const char *ssid, FAR const char *password)
   ret = esp_hosted_rpc_set_wifi_event_cb(c6net_wifi_event, priv);
   if (ret < 0)
     {
-      return ret;
+      goto out;
     }
 
   ret = esp_hosted_register(ESP_HOSTED_IF_STA, c6net_rx, priv);
   if (ret < 0)
     {
-      return ret;
+      goto out;
     }
 
   ret = netdev_register(&priv->dev, NET_LL_ETHERNET);
   if (ret < 0)
     {
-      return ret;
+      goto out;
     }
 
   priv->initialized = true;
@@ -270,10 +287,54 @@ int c6net_initialize(FAR const char *ssid, FAR const char *password)
   if (priv->daemon_pid < 0)
     {
       priv->initialized = false;
-      return -errno;
+      ret = -errno;
+      goto out;
     }
 
-  return 0;
+  /* An empty SSID asks the C6 to reconnect with the credentials persisted in
+   * its own NVS.  A failed association does not tear down eth0, so Settings
+   * can provide new credentials without resetting the transport. */
+
+  ret = esp_hosted_rpc_wifi_connect(ssid, password);
+
+out:
+  pthread_mutex_unlock(&g_c6net_connect_lock);
+  return ret;
+}
+
+int c6net_connect(FAR const char *ssid, FAR const char *password)
+{
+  FAR struct c6net_state_s *priv = &g_c6net;
+  int lockret;
+  int ret;
+
+  if (!priv->initialized)
+    {
+      return c6net_initialize(ssid, password);
+    }
+
+  lockret = pthread_mutex_lock(&g_c6net_connect_lock);
+  if (lockret != 0)
+    {
+      return -lockret;
+    }
+
+  priv->associated = false;
+  priv->carrier_ready = false;
+  priv->event_pending = true;
+  ret = esp_hosted_rpc_wifi_connect(ssid, password);
+  pthread_mutex_unlock(&g_c6net_connect_lock);
+  return ret;
+}
+
+bool c6net_is_initialized(void)
+{
+  return g_c6net.initialized;
+}
+
+bool c6net_is_associated(void)
+{
+  return g_c6net.associated && g_c6net.carrier_ready;
 }
 
 #endif /* CONFIG_NET */
