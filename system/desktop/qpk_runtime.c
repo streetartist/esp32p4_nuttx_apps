@@ -7,8 +7,10 @@
 #include <nuttx/config.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -63,6 +65,74 @@ struct qpk_runtime_s
 };
 
 static struct qpk_runtime_s g_qpk;
+
+static char *qpk_module_normalize(JSContext *ctx, const char *base,
+                                  const char *name, void *opaque)
+{
+  const char *slash;
+  char path[256];
+  (void)ctx;
+  (void)opaque;
+  if (name[0] != '.' || base == NULL)
+    {
+      return strdup(name);
+    }
+  slash = strrchr(base, '/');
+  if (slash == NULL)
+    {
+      return strdup(name);
+    }
+  snprintf(path, sizeof(path), "%.*s/%s", (int)(slash - base), base, name);
+  return strdup(path);
+}
+
+static JSModuleDef *qpk_module_loader(JSContext *ctx, const char *name,
+                                      void *opaque)
+{
+  const char *builtin = NULL;
+  char *source = NULL;
+  size_t size;
+  FILE *fp;
+  JSValue value;
+  (void)opaque;
+
+  if (strcmp(name, "@system.fetch") == 0)
+    {
+      builtin = "export default globalThis.system.fetch;";
+    }
+  else if (strcmp(name, "@system.network") == 0)
+    {
+      builtin = "export default globalThis.system.network;";
+    }
+  if (builtin != NULL)
+    {
+      value = JS_Eval(ctx, builtin, strlen(builtin), name,
+                      JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+      return JS_IsException(value) ? NULL : JS_VALUE_GET_PTR(value);
+    }
+
+  fp = fopen(name, "rb");
+  if (fp == NULL)
+    {
+      return NULL;
+    }
+  fseek(fp, 0, SEEK_END);
+  size = (size_t)ftell(fp);
+  fseek(fp, 0, SEEK_SET);
+  source = malloc(size + 1);
+  if (source == NULL || fread(source, 1, size, fp) != size)
+    {
+      fclose(fp);
+      free(source);
+      return NULL;
+    }
+  fclose(fp);
+  source[size] = '\0';
+  value = JS_Eval(ctx, source, size, name,
+                  JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+  free(source);
+  return JS_IsException(value) ? NULL : JS_VALUE_GET_PTR(value);
+}
 
 static uint64_t qpk_now_ms(void)
 {
@@ -697,6 +767,8 @@ int qpk_runtime_launch(lv_obj_t *root, const char *name,
   JS_SetMemoryLimit(g_qpk.runtime, QPK_MEMORY_LIMIT);
   JS_SetMaxStackSize(g_qpk.runtime, QPK_STACK_LIMIT);
   JS_SetInterruptHandler(g_qpk.runtime, qpk_interrupt, &g_qpk);
+  JS_SetModuleLoaderFunc(g_qpk.runtime, qpk_module_normalize,
+                         qpk_module_loader, NULL);
   g_qpk.context = JS_NewContext(g_qpk.runtime);
   if (g_qpk.context == NULL)
     {
@@ -708,7 +780,7 @@ int qpk_runtime_launch(lv_obj_t *root, const char *name,
   qpk_net_install(g_qpk.context);
   qpk_deadline_begin(QPK_EVAL_BUDGET);
   result = JS_Eval(g_qpk.context, source, source_len,
-                   filename ? filename : "app.js", JS_EVAL_TYPE_GLOBAL);
+                   filename ? filename : "app.js", JS_EVAL_TYPE_MODULE);
   qpk_deadline_end();
   if (JS_IsException(result))
     {

@@ -361,8 +361,11 @@ static void show_toast(const char *text)
 
 static const char g_hello_qpk_js[] =
   "'use strict';\n"
+  "import network from '@system.network';\n"
   "const info = app.getInfo();\n"
+  "const net = network.status();\n"
   "ui.text(info.packageName + '  v' + info.versionName, 24, 60, 16, ui.secondary);\n"
+  "ui.text('network: ' + (net.connected ? net.ip : 'offline'), 24, 88, 16, ui.secondary);\n"
   "ui.text(info.name, 472, 92, 28, ui.primary);\n"
   "ui.button('Toast 提示', 362, 150, 300, 54, () => {\n"
   "  prompt.showToast({message: '来自真正 QuickJS QPK 的问候'});\n"
