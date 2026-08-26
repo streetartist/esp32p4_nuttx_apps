@@ -27,6 +27,7 @@
 #define QPK_MAX_TIMERS    8
 #define QPK_EVAL_BUDGET   250
 #define QPK_EVENT_BUDGET  80
+#define QPK_NET_POLL_MS   20
 
 struct qpk_event_s
 {
@@ -50,6 +51,7 @@ struct qpk_runtime_s
   lv_obj_t *widgets[QPK_MAX_WIDGETS];
   struct qpk_event_s events[QPK_MAX_EVENTS];
   struct qpk_timer_s timers[QPK_MAX_TIMERS];
+  lv_timer_t *net_timer;
   qpk_font_cb_t font_cb;
   qpk_message_cb_t toast_cb;
   qpk_message_cb_t dialog_cb;
@@ -214,6 +216,25 @@ static int qpk_run_jobs(void)
     }
 
   return 0;
+}
+
+static void qpk_net_timer_cb(lv_timer_t *timer)
+{
+  int completed;
+
+  (void)timer;
+  if (g_qpk.context == NULL)
+    {
+      return;
+    }
+
+  qpk_deadline_begin(QPK_EVENT_BUDGET);
+  completed = qpk_net_poll(g_qpk.context);
+  if (completed > 0)
+    {
+      qpk_run_jobs();
+    }
+  qpk_deadline_end();
 }
 
 static JSValue qpk_call(JSValueConst function, unsigned int budget_ms)
@@ -778,6 +799,14 @@ int qpk_runtime_launch(lv_obj_t *root, const char *name,
 
   qpk_install_api(g_qpk.context);
   qpk_net_install(g_qpk.context);
+  g_qpk.net_timer = lv_timer_create(qpk_net_timer_cb, QPK_NET_POLL_MS,
+                                    NULL);
+  if (g_qpk.net_timer == NULL)
+    {
+      qpk_runtime_stop();
+      return -ENOMEM;
+    }
+
   qpk_deadline_begin(QPK_EVAL_BUDGET);
   result = JS_Eval(g_qpk.context, source, source_len,
                    filename ? filename : "app.js", JS_EVAL_TYPE_MODULE);
@@ -805,6 +834,14 @@ void qpk_runtime_stop(void)
 
   if (g_qpk.context != NULL)
     {
+      if (g_qpk.net_timer != NULL)
+        {
+          lv_timer_delete(g_qpk.net_timer);
+          g_qpk.net_timer = NULL;
+        }
+
+      qpk_net_cancel(g_qpk.context);
+
       for (i = 0; i < QPK_MAX_TIMERS; i++)
         {
           if (g_qpk.timers[i].used)

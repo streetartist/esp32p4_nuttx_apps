@@ -56,12 +56,12 @@ static const struct builtin_qpk_s g_builtin_qpk =
 {
   .manifest =
     {
-      .name = "你好快应用",
-      .package = "com.example.hello",
-      .version = "1.0.2",
-      .entry = "builtin:/hello/app.js",
+      .name = "天气",
+      .package = "com.example.weather",
+      .version = "1.0.0",
+      .entry = "builtin:/weather/index.js",
     },
-  .kind = "内置示例",
+  .kind = "网络快应用",
   .format = "QPK 1.0",
 };
 
@@ -361,23 +361,44 @@ static void show_toast(const char *text)
 
 static const char g_hello_qpk_js[] =
   "'use strict';\n"
+  "import fetch from '@system.fetch';\n"
   "import network from '@system.network';\n"
-  "const info = app.getInfo();\n"
-  "const net = network.status();\n"
-  "ui.text(info.packageName + '  v' + info.versionName, 24, 60, 16, ui.secondary);\n"
-  "ui.text('network: ' + (net.connected ? net.ip : 'offline'), 24, 88, 16, ui.secondary);\n"
-  "ui.text(info.name, 472, 92, 28, ui.primary);\n"
-  "ui.button('Toast 提示', 362, 150, 300, 54, () => {\n"
-  "  prompt.showToast({message: '来自真正 QuickJS QPK 的问候'});\n"
-  "}, 0x6677f5);\n"
-  "ui.button('对话框', 362, 218, 300, 54, () => {\n"
-  "  prompt.dialog({title: 'QPK 运行时',\n"
-  "    message: '界面由 JavaScript 创建，事件由 QuickJS 执行。'});\n"
-  "}, ui.surface);\n"
-  "let secs = 0;\n"
-  "const tick = ui.text('已运行 0 秒', 456, 338, 16, ui.secondary);\n"
-  "setInterval(() => { secs++; ui.setText(tick, '已运行 ' + secs + ' 秒'); }, 1000);\n"
-  "console.log('hello QPK initialized');\n";
+  "const cities = [{q:'jingjiang',n:'靖江'},{q:'shanghai',n:'上海'},{q:'beijing',n:'北京'}];\n"
+  "let cityIndex = 0;\n"
+  "let current = ui.text('靖江', 28, 28, 30, ui.primary);\n"
+  "const place = ui.text('中国 · 天气', 30, 68, 16, ui.secondary);\n"
+  "const state = ui.text('正在连接天气服务…', 30, 108, 16, ui.secondary);\n"
+  "const temp = ui.text('--°', 270, 92, 64, ui.primary);\n"
+  "const weather = ui.text('—', 292, 170, 28, ui.primary);\n"
+  "const range = ui.text('最高 --°  最低 --°', 270, 208, 16, ui.secondary);\n"
+  "const metrics = ui.text('湿度 --    风向 --    风力 --', 70, 258, 20, ui.primary);\n"
+  "const days = [];\n"
+  "for (let i = 0; i < 5; i++) days.push(ui.text('', 28 + i * 142, 300, 15, ui.secondary));\n"
+  "const net = ui.text('', 30, 352, 14, ui.secondary);\n"
+  "function setText(h, s) { ui.setText(h, String(s)); }\n"
+  "function render(r) {\n"
+  "  let w;\n"
+  "  try { w = JSON.parse(r.data); } catch (e) { setText(state, '天气数据格式错误'); return; }\n"
+  "  if (!w || w.temperature === undefined) { setText(state, '找不到该城市'); return; }\n"
+  "  setText(current, w.district || w.city || cities[cityIndex].n);\n"
+  "  setText(place, (w.province || '中国') + (w.city ? ' · ' + w.city : ''));\n"
+  "  setText(temp, Math.round(Number(w.temperature)) + '°');\n"
+  "  setText(weather, w.weather || '—');\n"
+  "  setText(range, '最高 ' + (w.temp_max === undefined ? '--' : Math.round(Number(w.temp_max))) + '°  最低 ' + (w.temp_min === undefined ? '--' : Math.round(Number(w.temp_min))) + '°');\n"
+  "  setText(metrics, '湿度 ' + (w.humidity === undefined ? '--' : w.humidity + '%') + '    风向 ' + (w.wind_direction || '—') + '    风力 ' + (w.wind_power || '—'));\n"
+  "  setText(state, w.report_time || '已更新');\n"
+  "  const f = w.forecast || [];\n"
+  "  for (let i = 0; i < 5; i++) { const d = f[i]; setText(days[i], d ? ((i === 0 ? '今天' : (d.week || '').slice(-1)) + '\\n' + (d.weather_day || '') + '\\n' + Math.round(Number(d.temp_max)) + '° / ' + Math.round(Number(d.temp_min)) + '°') : ''); }\n"
+  "}\n"
+  "function refresh() {\n"
+  "  setText(state, '正在更新…');\n"
+  "  fetch.fetch({url:'https://uapis.cn/api/v1/misc/weather?city=' + encodeURIComponent(cities[cityIndex].q) + '&forecast=true', timeout:15000}).then(render).catch(function (e) { const code = e && e.code !== undefined ? e.code : '?'; setText(state, '网络异常 (' + code + ')'); prompt.showToast({message:'天气请求失败，错误码 ' + code}); });\n"
+  "}\n"
+  "ui.button('刷新', 30, 150, 112, 48, refresh, 0x1e7cc0);\n"
+  "ui.button('切换城市', 154, 150, 140, 48, function () { cityIndex = (cityIndex + 1) % cities.length; setText(current, cities[cityIndex].n); refresh(); }, ui.surface);\n"
+  "ui.button('网络状态', 30, 376, 140, 42, function () { const n = network.status(); setText(net, n.connected ? 'Wi-Fi  ' + n.ip : 'Wi-Fi 未连接'); }, ui.surface);\n"
+  "refresh();\n"
+  "// Refresh is explicit so a failed TLS request cannot outlive the page.\n";
 
 static void qpk_dialog_close(lv_event_t *e)
 {
