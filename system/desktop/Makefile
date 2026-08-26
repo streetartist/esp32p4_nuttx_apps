@@ -10,8 +10,9 @@ STACKSIZE = $(CONFIG_SYSTEM_DESKTOP_STACKSIZE)
 MODULE    = $(CONFIG_SYSTEM_DESKTOP)
 
 CFLAGS += -I$(APPDIR)/interpreters/quickjs/quickjs
+CFLAGS += -I$(APPDIR)/include
 
-CSRCS   = desktop_font.c qpk_runtime.c
+CSRCS   = desktop_font.c qpk_runtime.c qpk_net.c
 MAINSRC = desktop_main.c
 
 include $(APPDIR)/Application.mk

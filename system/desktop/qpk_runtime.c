@@ -16,6 +16,7 @@
 #include <quickjs.h>
 
 #include "qpk_runtime.h"
+#include "qpk_net.h"
 
 #define QPK_MEMORY_LIMIT  (2 * 1024 * 1024)
 #define QPK_STACK_LIMIT   (16 * 1024)
@@ -704,6 +705,7 @@ int qpk_runtime_launch(lv_obj_t *root, const char *name,
     }
 
   qpk_install_api(g_qpk.context);
+  qpk_net_install(g_qpk.context);
   qpk_deadline_begin(QPK_EVAL_BUDGET);
   result = JS_Eval(g_qpk.context, source, source_len,
                    filename ? filename : "app.js", JS_EVAL_TYPE_GLOBAL);
