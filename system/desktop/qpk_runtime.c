@@ -22,11 +22,11 @@
 
 #define QPK_MEMORY_LIMIT  (2 * 1024 * 1024)
 #define QPK_STACK_LIMIT   (16 * 1024)
-#define QPK_MAX_WIDGETS   32
+#define QPK_MAX_WIDGETS   64
 #define QPK_MAX_EVENTS    16
 #define QPK_MAX_TIMERS    8
-#define QPK_EVAL_BUDGET   250
-#define QPK_EVENT_BUDGET  80
+#define QPK_EVAL_BUDGET   1000
+#define QPK_EVENT_BUDGET  500
 #define QPK_NET_POLL_MS   20
 
 struct qpk_event_s
@@ -384,6 +384,104 @@ static JSValue js_ui_set_text(JSContext *context,
   return JS_UNDEFINED;
 }
 
+static JSValue js_ui_background(JSContext *context,
+                                JSValueConst this_value,
+                                int argc, JSValueConst *argv)
+{
+  uint32_t color;
+
+  (void)this_value;
+  color = qpk_arg_color(context, argc, argv, 0, 0xffffff);
+  lv_obj_set_style_bg_color(g_qpk.root, lv_color_hex(color), 0);
+  lv_obj_set_style_bg_opa(g_qpk.root, LV_OPA_COVER, 0);
+  return JS_UNDEFINED;
+}
+
+static JSValue js_ui_get_size(JSContext *context,
+                              JSValueConst this_value,
+                              int argc, JSValueConst *argv)
+{
+  JSValue size;
+
+  (void)this_value;
+  (void)argc;
+  (void)argv;
+  lv_obj_update_layout(g_qpk.root);
+  size = JS_NewObject(context);
+  JS_SetPropertyStr(context, size, "width",
+                    JS_NewInt32(context, lv_obj_get_width(g_qpk.root)));
+  JS_SetPropertyStr(context, size, "height",
+                    JS_NewInt32(context, lv_obj_get_height(g_qpk.root)));
+  return size;
+}
+
+static JSValue js_ui_set_color(JSContext *context,
+                               JSValueConst this_value,
+                               int argc, JSValueConst *argv)
+{
+  int handle;
+  uint32_t color;
+
+  (void)this_value;
+  handle = qpk_arg_int(context, argc, argv, 0, 0);
+  color = qpk_arg_color(context, argc, argv, 1, 0xffffff);
+  if (handle <= 0 || handle > QPK_MAX_WIDGETS ||
+      g_qpk.widgets[handle - 1] == NULL)
+    {
+      return JS_ThrowRangeError(context, "invalid widget handle");
+    }
+
+  lv_obj_set_style_bg_color(g_qpk.widgets[handle - 1],
+                            lv_color_hex(color), 0);
+  return JS_UNDEFINED;
+}
+
+static JSValue js_ui_panel(JSContext *context, JSValueConst this_value,
+                           int argc, JSValueConst *argv)
+{
+  lv_obj_t *panel;
+  int handle;
+  int opacity;
+
+  (void)this_value;
+  panel = lv_obj_create(g_qpk.root);
+  if (panel == NULL)
+    {
+      return JS_ThrowInternalError(context, "cannot create panel");
+    }
+
+  lv_obj_set_pos(panel, qpk_arg_int(context, argc, argv, 0, 0),
+                 qpk_arg_int(context, argc, argv, 1, 0));
+  lv_obj_set_size(panel, qpk_arg_int(context, argc, argv, 2, 100),
+                  qpk_arg_int(context, argc, argv, 3, 100));
+  lv_obj_set_style_bg_color(panel,
+      lv_color_hex(qpk_arg_color(context, argc, argv, 4, 0xffffff)), 0);
+  opacity = qpk_arg_int(context, argc, argv, 6, LV_OPA_COVER);
+  if (opacity < LV_OPA_TRANSP)
+    {
+      opacity = LV_OPA_TRANSP;
+    }
+  else if (opacity > LV_OPA_COVER)
+    {
+      opacity = LV_OPA_COVER;
+    }
+
+  lv_obj_set_style_bg_opa(panel, opacity, 0);
+  lv_obj_set_style_border_width(panel, 0, 0);
+  lv_obj_set_style_radius(panel,
+                          qpk_arg_int(context, argc, argv, 5, 0), 0);
+  lv_obj_set_style_pad_all(panel, 0, 0);
+  lv_obj_remove_flag(panel, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+  handle = qpk_add_widget(panel);
+  if (handle == 0)
+    {
+      lv_obj_delete(panel);
+      return JS_ThrowInternalError(context, "too many widgets");
+    }
+
+  return JS_NewInt32(context, handle);
+}
+
 static JSValue js_ui_button(JSContext *context, JSValueConst this_value,
                             int argc, JSValueConst *argv)
 {
@@ -698,6 +796,17 @@ static void qpk_install_api(JSContext *context)
                     JS_NewCFunction(context, js_ui_text, "text", 5));
   JS_SetPropertyStr(context, object, "setText",
                     JS_NewCFunction(context, js_ui_set_text, "setText", 2));
+  JS_SetPropertyStr(context, object, "background",
+                    JS_NewCFunction(context, js_ui_background,
+                                    "background", 1));
+  JS_SetPropertyStr(context, object, "getSize",
+                    JS_NewCFunction(context, js_ui_get_size,
+                                    "getSize", 0));
+  JS_SetPropertyStr(context, object, "setColor",
+                    JS_NewCFunction(context, js_ui_set_color,
+                                    "setColor", 2));
+  JS_SetPropertyStr(context, object, "panel",
+                    JS_NewCFunction(context, js_ui_panel, "panel", 7));
   JS_SetPropertyStr(context, object, "button",
                     JS_NewCFunction(context, js_ui_button, "button", 7));
   JS_SetPropertyStr(context, object, "primary",

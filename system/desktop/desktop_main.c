@@ -79,6 +79,7 @@ struct desktop_env_s
   lv_font_t *font16;
   lv_font_t *font20;
   lv_font_t *font28;
+  lv_font_t *font48;
   struct qpk_entry_s qpk[MAX_QPK];
   int nqpk;
   bool light_theme;
@@ -95,6 +96,11 @@ enum builtin_id_e
 
 static const lv_font_t *zh_font(int size)
 {
+  if (size >= 40 && g_desktop.font48 != NULL)
+    {
+      return g_desktop.font48;
+    }
+
   if (size >= 28 && g_desktop.font28 != NULL)
     {
       return g_desktop.font28;
@@ -365,40 +371,103 @@ static const char g_hello_qpk_js[] =
   "import network from '@system.network';\n"
   "const cities = [{q:'jingjiang',n:'靖江'},{q:'shanghai',n:'上海'},{q:'beijing',n:'北京'}];\n"
   "let cityIndex = 0;\n"
-  "let current = ui.text('靖江', 28, 28, 30, ui.primary);\n"
-  "const place = ui.text('中国 · 天气', 30, 68, 16, ui.secondary);\n"
-  "const state = ui.text('正在连接天气服务…', 30, 108, 16, ui.secondary);\n"
-  "const temp = ui.text('--°', 270, 92, 64, ui.primary);\n"
-  "const weather = ui.text('—', 292, 170, 28, ui.primary);\n"
-  "const range = ui.text('最高 --°  最低 --°', 270, 208, 16, ui.secondary);\n"
-  "const metrics = ui.text('湿度 --    风向 --    风力 --', 70, 258, 20, ui.primary);\n"
-  "const days = [];\n"
-  "for (let i = 0; i < 5; i++) days.push(ui.text('', 28 + i * 142, 300, 15, ui.secondary));\n"
-  "const net = ui.text('', 30, 352, 14, ui.secondary);\n"
+  "let loading = false;\n"
+  "let hasWeather = false;\n"
+  "const viewport = ui.getSize();\n"
+  "const W = viewport.width, H = viewport.height;\n"
+  "const pad = 28, gap = 12;\n"
+  "const heroH = Math.floor(H * 0.38);\n"
+  "const metricsY = heroH + 16;\n"
+  "const metricsH = Math.floor(H * 0.17);\n"
+  "const forecastY = metricsY + metricsH + 16;\n"
+  "const forecastH = H - forecastY - 18;\n"
+  "const metricW = Math.floor((W - pad * 2 - gap * 2) / 3);\n"
+  "const colW = Math.floor((W - pad * 2 - 32) / 5);\n"
+  "const tempX = Math.floor(W * 0.40);\n"
+  "const actionX = W - 182;\n"
+  "ui.background(0x081218);\n"
+  "const hero = ui.panel(0, 0, W, heroH, 0x123e4a, 0, 255);\n"
+  "ui.panel(pad, metricsY, metricW, metricsH, 0x14262e, 8, 255);\n"
+  "ui.panel(pad + metricW + gap, metricsY, metricW, metricsH, 0x14262e, 8, 255);\n"
+  "ui.panel(pad + (metricW + gap) * 2, metricsY, metricW, metricsH, 0x14262e, 8, 255);\n"
+  "ui.panel(pad, forecastY, W - pad * 2, forecastH, 0x102129, 8, 255);\n"
+  "for (let i = 1; i < 5; i++) ui.panel(pad + 16 + colW * i, forecastY + 48, 1, forecastH - 64, 0x29404a, 0, 255);\n"
+  "const current = ui.text('靖江', 32, 20, 28, 0xf4fbfc);\n"
+  "const place = ui.text('江苏 · 泰州', 34, 58, 16, 0xb9d5da);\n"
+  "const state = ui.text('正在同步时间和天气数据', 34, heroH - 38, 16, 0x9fc4ca);\n"
+  "const temp = ui.text('--', tempX, 22, 48, 0xffffff);\n"
+  "ui.text('度', tempX + 84, 49, 20, 0xffffff);\n"
+  "const weather = ui.text('等待更新', tempX + 2, 86, 28, 0xffffff);\n"
+  "const range = ui.text('最高 --度  最低 --度', tempX + 3, 130, 16, 0xc9e3e7);\n"
+  "ui.text('湿度', pad + 18, metricsY + 14, 16, 0x8fa5af);\n"
+  "const humidity = ui.text('--', pad + 18, metricsY + 47, 20, 0x5bc0be);\n"
+  "ui.text('风向', pad + metricW + gap + 18, metricsY + 14, 16, 0x8fa5af);\n"
+  "const wind = ui.text('--', pad + metricW + gap + 18, metricsY + 47, 20, 0x7bd389);\n"
+  "ui.text('风力', pad + (metricW + gap) * 2 + 18, metricsY + 14, 16, 0x8fa5af);\n"
+  "const power = ui.text('--', pad + (metricW + gap) * 2 + 18, metricsY + 47, 20, 0xf4b860);\n"
+  "ui.text('未来五日', pad + 16, forecastY + 14, 16, 0xdce9ed);\n"
+  "const dayName = [], dayWeather = [], dayRange = [];\n"
+  "for (let i = 0; i < 5; i++) {\n"
+  "  const x = pad + 24 + i * colW;\n"
+  "  dayName.push(ui.text(i === 0 ? '今天' : '--', x, forecastY + 52, 16, 0x8fa5af));\n"
+  "  dayWeather.push(ui.text('--', x, forecastY + 87, 20, 0xeaf3f5));\n"
+  "  dayRange.push(ui.text('--度 / --度', x, forecastY + 127, 16, 0x9eb1ba));\n"
+  "}\n"
   "function setText(h, s) { ui.setText(h, String(s)); }\n"
+  "function value(v) { const n = Number(v); return isFinite(n) ? Math.round(n) : '--'; }\n"
+  "function clearWeather() {\n"
+  "  setText(temp, '--'); setText(weather, '正在更新');\n"
+  "  setText(range, '最高 --度  最低 --度');\n"
+  "  setText(humidity, '--'); setText(wind, '--'); setText(power, '--');\n"
+  "  for (let i = 0; i < 5; i++) { setText(dayName[i], i === 0 ? '今天' : '--'); setText(dayWeather[i], '--'); setText(dayRange[i], '--度 / --度'); }\n"
+  "}\n"
+  "function tone(wx) {\n"
+  "  const s = wx || '';\n"
+  "  if (s.indexOf('雷') >= 0) return 0x392f51;\n"
+  "  if (s.indexOf('雪') >= 0) return 0x405b68;\n"
+  "  if (s.indexOf('雨') >= 0) return 0x173a52;\n"
+  "  if (s.indexOf('阴') >= 0) return 0x3b4a50;\n"
+  "  if (s.indexOf('云') >= 0) return 0x245063;\n"
+  "  if (s.indexOf('晴') >= 0) return 0x11657a;\n"
+  "  if (s.indexOf('雾') >= 0 || s.indexOf('霾') >= 0) return 0x514f49;\n"
+  "  return 0x123e4a;\n"
+  "}\n"
   "function render(r) {\n"
   "  let w;\n"
-  "  try { w = JSON.parse(r.data); } catch (e) { setText(state, '天气数据格式错误'); return; }\n"
-  "  if (!w || w.temperature === undefined) { setText(state, '找不到该城市'); return; }\n"
+  "  try { w = JSON.parse(r.data); } catch (e) { throw new Error('天气数据格式错误'); }\n"
+  "  if (!w || w.temperature === undefined) { throw new Error('找不到该城市'); }\n"
   "  setText(current, w.district || w.city || cities[cityIndex].n);\n"
   "  setText(place, (w.province || '中国') + (w.city ? ' · ' + w.city : ''));\n"
-  "  setText(temp, Math.round(Number(w.temperature)) + '°');\n"
+  "  setText(temp, value(w.temperature));\n"
   "  setText(weather, w.weather || '—');\n"
-  "  setText(range, '最高 ' + (w.temp_max === undefined ? '--' : Math.round(Number(w.temp_max))) + '°  最低 ' + (w.temp_min === undefined ? '--' : Math.round(Number(w.temp_min))) + '°');\n"
-  "  setText(metrics, '湿度 ' + (w.humidity === undefined ? '--' : w.humidity + '%') + '    风向 ' + (w.wind_direction || '—') + '    风力 ' + (w.wind_power || '—'));\n"
-  "  setText(state, w.report_time || '已更新');\n"
+  "  ui.setColor(hero, tone(w.weather));\n"
+  "  setText(range, '最高 ' + value(w.temp_max) + '度  最低 ' + value(w.temp_min) + '度');\n"
+  "  setText(humidity, w.humidity === undefined ? '--' : w.humidity + '%');\n"
+  "  setText(wind, w.wind_direction || '—');\n"
+  "  setText(power, w.wind_power || '—');\n"
+  "  setText(state, w.report_time ? '更新于 ' + w.report_time : '刚刚更新');\n"
   "  const f = w.forecast || [];\n"
-  "  for (let i = 0; i < 5; i++) { const d = f[i]; setText(days[i], d ? ((i === 0 ? '今天' : (d.week || '').slice(-1)) + '\\n' + (d.weather_day || '') + '\\n' + Math.round(Number(d.temp_max)) + '° / ' + Math.round(Number(d.temp_min)) + '°') : ''); }\n"
+  "  for (let i = 0; i < 5; i++) {\n"
+  "    const d = f[i];\n"
+  "    const wk = d && d.week ? d.week.slice(-1) : '--';\n"
+  "    setText(dayName[i], d ? (i === 0 ? '今天' : '周' + wk) : '--');\n"
+  "    setText(dayWeather[i], d ? (d.weather_day || '—') : '--');\n"
+  "    setText(dayRange[i], d ? value(d.temp_max) + '度 / ' + value(d.temp_min) + '度' : '--度 / --度');\n"
+  "  }\n"
+  "  hasWeather = true;\n"
   "}\n"
   "function refresh() {\n"
-  "  setText(state, '正在更新…');\n"
-  "  fetch.fetch({url:'https://uapis.cn/api/v1/misc/weather?city=' + encodeURIComponent(cities[cityIndex].q) + '&forecast=true', timeout:15000}).then(render).catch(function (e) { const code = e && e.code !== undefined ? e.code : '?'; setText(state, '网络异常 (' + code + ')'); prompt.showToast({message:'天气请求失败，错误码 ' + code}); });\n"
+  "  if (loading) return;\n"
+  "  const n = network.status();\n"
+  "  if (!n.connected) { setText(state, 'Wi-Fi 未连接'); prompt.showToast({message:'请先连接网络'}); return; }\n"
+  "  loading = true;\n"
+  "  setText(state, hasWeather ? '正在刷新天气' : '正在同步时间和天气数据');\n"
+  "  fetch.fetch({url:'https://uapis.cn/api/v1/misc/weather?city=' + encodeURIComponent(cities[cityIndex].q) + '&forecast=true', timeout:20000}).then(function (r) { render(r); loading = false; }).catch(function (e) { const code = e && e.code !== undefined ? e.code : '?'; loading = false; setText(state, hasWeather ? '更新失败 · 显示上次结果' : '天气服务暂时不可用 (' + code + ')'); prompt.showToast({message:'天气更新失败'}); });\n"
   "}\n"
-  "ui.button('刷新', 30, 150, 112, 48, refresh, 0x1e7cc0);\n"
-  "ui.button('切换城市', 154, 150, 140, 48, function () { cityIndex = (cityIndex + 1) % cities.length; setText(current, cities[cityIndex].n); refresh(); }, ui.surface);\n"
-  "ui.button('网络状态', 30, 376, 140, 42, function () { const n = network.status(); setText(net, n.connected ? 'Wi-Fi  ' + n.ip : 'Wi-Fi 未连接'); }, ui.surface);\n"
+  "ui.button('刷新天气', actionX, 24, 150, 44, refresh, 0xe6b84e);\n"
+  "ui.button('切换城市', actionX, 82, 150, 44, function () { if (loading) return; cityIndex = (cityIndex + 1) % cities.length; setText(current, cities[cityIndex].n); setText(place, '正在获取城市信息'); hasWeather = false; clearWeather(); refresh(); }, 0x1d5362);\n"
   "refresh();\n"
-  "// Refresh is explicit so a failed TLS request cannot outlive the page.\n";
+  "setInterval(refresh, 600000);\n";
 
 static void qpk_dialog_close(lv_event_t *e)
 {
@@ -840,6 +909,8 @@ static void desktop_ui_create(void)
                                               font_size, 20);
   g_desktop.font28 = lv_tiny_ttf_create_data(g_desktop_font_start,
                                               font_size, 28);
+  g_desktop.font48 = lv_tiny_ttf_create_data(g_desktop_font_start,
+                                              font_size, 48);
   g_desktop.screen = screen;
   lv_obj_set_style_bg_color(screen, lv_color_hex(0x090d18), 0);
   g_desktop.statusbar = statusbar_create(screen);
