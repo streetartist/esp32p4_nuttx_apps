@@ -30,4 +30,13 @@ config SYSTEM_DESKTOP_QPK_DIR
 	string "Quick app directory"
 	default "/data/qpk"
 
+config SYSTEM_DESKTOP_FILEMGR_ROOT
+	string "File manager root directory"
+	default "/data"
+
+config SYSTEM_DESKTOP_FILEMGR_PORT
+	int "File manager HTTP port"
+	default 8080
+	range 1 65535
+
 endif

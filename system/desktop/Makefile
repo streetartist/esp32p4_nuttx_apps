@@ -13,7 +13,7 @@ CFLAGS += -I$(APPDIR)/interpreters/quickjs/quickjs
 CFLAGS += -I$(APPDIR)/include
 CFLAGS += -I$(APPDIR)/system/c6probe
 
-CSRCS   = desktop_font.c qpk_runtime.c qpk_net.c
+CSRCS   = desktop_font.c qpk_runtime.c qpk_net.c desktop_filemgr.c
 ASRCS   = qpk_ca_bundle.S
 MAINSRC = desktop_main.c
 

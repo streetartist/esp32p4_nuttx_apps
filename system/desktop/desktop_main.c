@@ -36,6 +36,7 @@
 
 #include "qpk_runtime.h"
 #include "qpk_net.h"
+#include "desktop_filemgr.h"
 
 #define QPK_DIR       CONFIG_SYSTEM_DESKTOP_QPK_DIR
 #define MAX_QPK       8
@@ -1610,6 +1611,53 @@ static void wifi_config_clicked(lv_event_t *e)
                            g_desktop.wifi_ssid_input);
 }
 
+static void filemgr_clicked(lv_event_t *e)
+{
+  struct wifi_snapshot_s snapshot;
+  lv_obj_t *card;
+  lv_obj_t *label;
+  char token[8];
+  char text[320];
+  int ret;
+
+  LV_UNUSED(e);
+  wifi_get_snapshot(&snapshot);
+  card = panel_card("文件管理");
+  if (snapshot.state != WIFI_STATE_CONNECTED || snapshot.ip[0] == '\0')
+    {
+      snprintf(text, sizeof(text),
+               "请先连接 Wi-Fi 并获取 IP 地址。\n\n"
+               "连接后，局域网内的电脑或手机可以通过浏览器管理 /data。\n"
+               "支持浏览、上传、下载、新建目录和删除文件。");
+    }
+  else
+    {
+      ret = desktop_filemgr_start();
+      if (ret < 0 || desktop_filemgr_get_token(token, sizeof(token)) < 0)
+        {
+          snprintf(text, sizeof(text),
+                   "文件管理服务启动失败（%d）。\n\n"
+                   "请确认端口 %d 没有被占用。",
+                   ret, CONFIG_SYSTEM_DESKTOP_FILEMGR_PORT);
+        }
+      else
+        {
+          snprintf(text, sizeof(text),
+                   "文件管理服务已启动\n\n"
+                   "浏览器地址：http://%s:%d/\n"
+                   "访问码：%s\n\n"
+                   "在同一个局域网内打开地址，首次访问输入访问码。\n"
+                   "所有操作都限制在 /data 目录内。",
+                   snapshot.ip, CONFIG_SYSTEM_DESKTOP_FILEMGR_PORT, token);
+        }
+    }
+
+  label = make_label(card, text, theme_secondary(), 20);
+  lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(label, 690);
+  lv_obj_set_pos(label, 24, 82);
+}
+
 static void settings_clicked(lv_event_t *e)
 {
   lv_obj_t *card;
@@ -1642,13 +1690,28 @@ static void settings_clicked(lv_event_t *e)
   label = make_label(button, "配置", 0xffffff, 20);
   lv_obj_center(label);
 
+  label = make_label(card, "文件管理", theme_primary(), 20);
+  lv_obj_set_pos(label, 28, 244);
+  label = make_label(card, "通过局域网浏览器管理 /data",
+                     theme_secondary(), 16);
+  lv_obj_set_pos(label, 28, 274);
+
+  button = lv_button_create(card);
+  lv_obj_set_size(button, 150, 50);
+  lv_obj_set_pos(button, 558, 246);
+  lv_obj_set_style_bg_color(button, lv_color_hex(0x31927a), 0);
+  lv_obj_add_event_cb(button, filemgr_clicked, LV_EVENT_CLICKED, NULL);
+  label = make_label(button, desktop_filemgr_running() ? "打开" : "启动",
+                     0xffffff, 20);
+  lv_obj_center(label);
+
   snprintf(info, sizeof(info),
            "设备信息\nESP32-P4 Function-EV-Board\n"
            "双核 RISC-V · PSRAM 已启用 · 触摸已连接\n"
            "NuttX 桌面 · 已发现 %d 个外部 QPK",
            g_desktop.nqpk);
   label = make_label(card, info, theme_secondary(), 16);
-  lv_obj_set_pos(label, 28, 270);
+  lv_obj_set_pos(label, 28, 350);
 
   wifi_ui_timer_cb(NULL);
 }
