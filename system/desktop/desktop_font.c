@@ -15,5 +15,10 @@ __asm__(
   ".global g_desktop_font_end\n"
   "g_desktop_font_end:\n"
   ".balign 4\n"
+  ".global g_desktop_number_font_start\n"
+  "g_desktop_number_font_start:\n"
+  ".incbin \"Montserrat-Bold.ttf\"\n"
+  ".global g_desktop_number_font_end\n"
+  "g_desktop_number_font_end:\n"
+  ".balign 4\n"
   ".popsection\n");
-

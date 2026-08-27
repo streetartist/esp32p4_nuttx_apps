@@ -51,6 +51,8 @@
 
 extern const uint8_t g_desktop_font_start[];
 extern const uint8_t g_desktop_font_end[];
+extern const uint8_t g_desktop_number_font_start[];
+extern const uint8_t g_desktop_number_font_end[];
 
 struct qpk_entry_s
 {
@@ -85,6 +87,19 @@ static const struct builtin_qpk_s g_builtin_qpk =
   .format = "QPK 1.0",
 };
 
+static const struct builtin_qpk_s g_builtin_2048_qpk =
+{
+  .manifest =
+    {
+      .name = "2048",
+      .package = "com.example.game2048",
+      .version = "1.0.0",
+      .entry = "builtin:/2048/index.js",
+    },
+  .kind = "休闲游戏",
+  .format = "QPK 1.0",
+};
+
 struct desktop_env_s
 {
   lv_obj_t *screen;
@@ -106,6 +121,9 @@ struct desktop_env_s
   lv_font_t *font20;
   lv_font_t *font28;
   lv_font_t *font48;
+  lv_font_t *number_font32;
+  lv_font_t *number_font40;
+  lv_font_t *number_font48;
   struct qpk_entry_s qpk[MAX_QPK];
   int nqpk;
   bool light_theme;
@@ -181,6 +199,26 @@ static const lv_font_t *zh_font(int size)
     }
 
   return &lv_font_montserrat_24;
+}
+
+static const lv_font_t *number_font(int digits)
+{
+  if (digits <= 2 && g_desktop.number_font48 != NULL)
+    {
+      return g_desktop.number_font48;
+    }
+
+  if (digits == 3 && g_desktop.number_font40 != NULL)
+    {
+      return g_desktop.number_font40;
+    }
+
+  if (g_desktop.number_font32 != NULL)
+    {
+      return g_desktop.number_font32;
+    }
+
+  return digits <= 2 ? &lv_font_montserrat_48 : &lv_font_montserrat_24;
 }
 
 static uint32_t theme_primary(void)
@@ -851,6 +889,123 @@ static const char g_hello_qpk_js[] =
   "refresh();\n"
   "setInterval(refresh, 600000);\n";
 
+static const char g_2048_qpk_js[] =
+  "'use strict';\n"
+  "import storage from '@system.storage';\n"
+  "const viewport = ui.getSize();\n"
+  "const W = viewport.width, H = viewport.height;\n"
+  "const controlsY = H - 48;\n"
+  "const tileGap = 8;\n"
+  "const boardSize = Math.min(W - 40, controlsY - 54);\n"
+  "const tileSize = Math.floor((boardSize - 16 - tileGap * 3) / 4);\n"
+  "const actualBoard = tileSize * 4 + tileGap * 3 + 16;\n"
+  "const boardX = Math.floor((W - actualBoard) / 2);\n"
+  "const boardY = 46;\n"
+  "const scoreLabel = ui.text('分数 0', 20, 10, 20, 0x776e65);\n"
+  "const bestLabel = ui.text('最高 0', 150, 10, 20, 0x776e65);\n"
+  "const statusLabel = ui.text('准备开始', W - 170, 12, 16, 0x776e65);\n"
+  "ui.background(0xfaf8ef);\n"
+  "const boardPanel = ui.panel(boardX, boardY, actualBoard, actualBoard, 0xbbada0, 10, 255);\n"
+  "const tilePanels = [], tileLabels = [];\n"
+  "for (let i = 0; i < 16; i++) {\n"
+  "  const x = boardX + 8 + (i % 4) * (tileSize + tileGap);\n"
+  "  const y = boardY + 8 + Math.floor(i / 4) * (tileSize + tileGap);\n"
+  "  tilePanels.push(ui.panel(x, y, tileSize, tileSize, 0xcdc1b4, 7, 255));\n"
+  "  tileLabels.push(ui.number('', x, y, tileSize, tileSize, 0x776e65));\n"
+  "}\n"
+  "const board = [];\n"
+  "let score = 0;\n"
+  "let best = 0;\n"
+  "let gameOver = false;\n"
+  "let won = false;\n"
+  "try { const value = Number(storage.get('best') || 0); if (isFinite(value) && value > 0) best = Math.floor(value); } catch (e) {}\n"
+  "function setText(handle, value) { ui.setText(handle, String(value)); }\n"
+  "function tileColor(value) {\n"
+  "  if (value === 2) return 0xeee4da;\n"
+  "  if (value === 4) return 0xede0c8;\n"
+  "  if (value === 8) return 0xf2b179;\n"
+  "  if (value === 16) return 0xf59563;\n"
+  "  if (value === 32) return 0xf67c5f;\n"
+  "  if (value === 64) return 0xf65e3b;\n"
+  "  if (value === 128) return 0xedcf72;\n"
+  "  if (value === 256) return 0xedcc61;\n"
+  "  if (value === 512) return 0xedc850;\n"
+  "  if (value === 1024) return 0xedc53f;\n"
+  "  if (value >= 2048) return 0xedc22e;\n"
+  "  return 0xcdc1b4;\n"
+  "}\n"
+  "function textColor(value) { return value <= 4 ? 0x776e65 : 0xffffff; }\n"
+  "function addTile() {\n"
+  "  const empty = [];\n"
+  "  for (let i = 0; i < 16; i++) if (board[i] === 0) empty.push(i);\n"
+  "  if (!empty.length) return;\n"
+  "  const index = empty[Math.floor(Math.random() * empty.length)];\n"
+  "  board[index] = Math.random() < 0.9 ? 2 : 4;\n"
+  "}\n"
+  "function reset() {\n"
+  "  board.length = 0;\n"
+  "  for (let i = 0; i < 16; i++) board.push(0);\n"
+  "  score = 0; gameOver = false; won = false; addTile(); addTile(); draw();\n"
+  "}\n"
+  "function slide(line) {\n"
+  "  const values = [];\n"
+  "  const result = [];\n"
+  "  for (let i = 0; i < 4; i++) if (line[i]) values.push(line[i]);\n"
+  "  for (let i = 0; i < values.length; i++) {\n"
+  "    if (i + 1 < values.length && values[i] === values[i + 1]) {\n"
+  "      const merged = values[i] * 2; result.push(merged); score += merged;\n"
+  "      if (merged === 2048) won = true; i++;\n"
+  "    } else result.push(values[i]);\n"
+  "  }\n"
+  "  while (result.length < 4) result.push(0);\n"
+  "  for (let i = 0; i < 4; i++) if (result[i] !== line[i]) return {line:result, changed:true};\n"
+  "  return {line:result, changed:false};\n"
+  "}\n"
+  "function move(direction) {\n"
+  "  if (gameOver) return;\n"
+  "  let changed = false;\n"
+  "  for (let n = 0; n < 4; n++) {\n"
+  "    const line = [];\n"
+  "    for (let k = 0; k < 4; k++) {\n"
+  "      const source = direction === 'right' || direction === 'down' ? 3 - k : k;\n"
+  "      const p = direction === 'left' || direction === 'right' ? n * 4 + source : source * 4 + n;\n"
+  "      line[k] = board[p];\n"
+  "    }\n"
+  "    const result = slide(line);\n"
+  "    if (result.changed) changed = true;\n"
+  "    for (let k = 0; k < 4; k++) {\n"
+  "      const target = direction === 'right' || direction === 'down' ? 3 - k : k;\n"
+  "      const p = direction === 'left' || direction === 'right' ? n * 4 + target : target * 4 + n;\n"
+  "      board[p] = result.line[k];\n"
+  "    }\n"
+  "  }\n"
+  "  if (!changed) { if (!canMove()) { gameOver = true; setText(statusLabel, '游戏结束'); } return; }\n"
+  "  if (score > best) { best = score; try { storage.set('best', String(best)); } catch (e) {} }\n"
+  "  addTile();\n"
+  "  if (!canMove()) gameOver = true;\n"
+  "  draw();\n"
+  "}\n"
+  "function canMove() {\n"
+  "  for (let i = 0; i < 16; i++) {\n"
+  "    if (board[i] === 0) return true;\n"
+  "    if (i % 4 < 3 && board[i] === board[i + 1]) return true;\n"
+  "    if (i < 12 && board[i] === board[i + 4]) return true;\n"
+  "  }\n"
+  "  return false;\n"
+  "}\n"
+  "function draw() {\n"
+  "  setText(scoreLabel, '分数 ' + score); setText(bestLabel, '最高 ' + best);\n"
+  "  if (gameOver) setText(statusLabel, '游戏结束'); else if (won) setText(statusLabel, '达成 2048'); else setText(statusLabel, '准备开始');\n"
+  "  for (let i = 0; i < 16; i++) { const value = board[i]; ui.setColor(tilePanels[i], tileColor(value)); ui.setColor(tileLabels[i], textColor(value)); setText(tileLabels[i], value ? value : ''); }\n"
+  "}\n"
+  "const restart = ui.button('重新开始', 20, controlsY, 132, 42, reset, 0xf0a04b);\n"
+  "const left = ui.button('左', W - 292, controlsY, 62, 42, function () { move('left'); }, 0x776e65);\n"
+  "const up = ui.button('上', W - 224, controlsY, 62, 42, function () { move('up'); }, 0x776e65);\n"
+  "const down = ui.button('下', W - 156, controlsY, 62, 42, function () { move('down'); }, 0x776e65);\n"
+  "const right = ui.button('右', W - 88, controlsY, 62, 42, function () { move('right'); }, 0x776e65);\n"
+  "ui.onSwipe(function (direction) { move(direction); });\n"
+  "reset();\n";
+
 static void qpk_dialog_close(lv_event_t *e)
 {
   lv_obj_delete(lv_event_get_user_data(e));
@@ -950,11 +1105,28 @@ static void qapp_back(lv_event_t *e)
   qpk_clicked(NULL);
 }
 
+static void qapp_gesture(lv_event_t *e)
+{
+  lv_indev_t *indev = lv_event_get_indev(e);
+  lv_dir_t expected = (lv_dir_t)(uintptr_t)lv_event_get_user_data(e);
+
+  if (indev == NULL || lv_indev_get_gesture_dir(indev) != expected)
+    {
+      return;
+    }
+
+  lv_indev_wait_release(indev);
+  lv_event_stop_processing(e);
+  qapp_back(NULL);
+}
+
 static lv_obj_t *qapp_page(const char *title)
 {
   lv_obj_t *page;
   lv_obj_t *content;
   lv_obj_t *back;
+  lv_obj_t *left_edge;
+  lv_obj_t *right_edge;
   lv_obj_t *label;
   int height;
 
@@ -1000,7 +1172,30 @@ static lv_obj_t *qapp_page(const char *title)
   lv_obj_set_style_border_width(content, 0, 0);
   lv_obj_set_style_radius(content, 0, 0);
   lv_obj_set_style_pad_all(content, 0, 0);
-  lv_obj_remove_flag(content, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_remove_flag(content, LV_OBJ_FLAG_SCROLLABLE |
+                              LV_OBJ_FLAG_GESTURE_BUBBLE);
+
+  left_edge = lv_obj_create(page);
+  lv_obj_set_pos(left_edge, 0, QAPP_HEADER_HEIGHT);
+  lv_obj_set_size(left_edge, 36, height);
+  lv_obj_set_style_bg_opa(left_edge, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(left_edge, 0, 0);
+  lv_obj_set_style_pad_all(left_edge, 0, 0);
+  lv_obj_remove_flag(left_edge, LV_OBJ_FLAG_SCROLLABLE |
+                                LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(left_edge, qapp_gesture, LV_EVENT_GESTURE,
+                     (void *)(uintptr_t)LV_DIR_RIGHT);
+
+  right_edge = lv_obj_create(page);
+  lv_obj_set_size(right_edge, 36, height);
+  lv_obj_align(right_edge, LV_ALIGN_TOP_RIGHT, 0, QAPP_HEADER_HEIGHT);
+  lv_obj_set_style_bg_opa(right_edge, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(right_edge, 0, 0);
+  lv_obj_set_style_pad_all(right_edge, 0, 0);
+  lv_obj_remove_flag(right_edge, LV_OBJ_FLAG_SCROLLABLE |
+                                 LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(right_edge, qapp_gesture, LV_EVENT_GESTURE,
+                     (void *)(uintptr_t)LV_DIR_LEFT);
 
   return content;
 }
@@ -1014,7 +1209,22 @@ static void launch_builtin_qapp(lv_event_t *e)
   card = qapp_page(manifest->name);
   qpk_runtime_launch(card, manifest->name, manifest->package,
                      manifest->version, manifest->entry, g_hello_qpk_js,
-                     sizeof(g_hello_qpk_js) - 1, zh_font, show_toast,
+                     sizeof(g_hello_qpk_js) - 1, zh_font, number_font,
+                     show_toast,
+                     qpk_show_dialog);
+}
+
+static void launch_builtin_2048_qapp(lv_event_t *e)
+{
+  lv_obj_t *card;
+  const struct qpk_entry_s *manifest = &g_builtin_2048_qpk.manifest;
+
+  LV_UNUSED(e);
+  card = qapp_page(manifest->name);
+  qpk_runtime_launch(card, manifest->name, manifest->package,
+                     manifest->version, manifest->entry, g_2048_qpk_js,
+                     sizeof(g_2048_qpk_js) - 1, zh_font, number_font,
+                     show_toast,
                      qpk_show_dialog);
 }
 
@@ -1041,7 +1251,8 @@ static void external_qapp_clicked(lv_event_t *e)
     {
       int ret = qpk_runtime_launch(card, qpk->name, qpk->package,
                                    qpk->version, filename, source,
-                                   source_size, zh_font, show_toast,
+                                   source_size, zh_font, number_font,
+                                   show_toast,
                                    qpk_show_dialog);
       free(source);
       if (ret == 0)
@@ -1076,9 +1287,9 @@ static lv_obj_t *list_button(lv_obj_t *parent, const char *title,
   lv_obj_set_style_radius(button, 14, 0);
   lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, user);
   label = make_label(button, title, theme_primary(), 20);
-  lv_obj_align(label, LV_ALIGN_TOP_LEFT, 12, 2);
+  lv_obj_align(label, LV_ALIGN_TOP_LEFT, 12, 1);
   label = make_label(button, subtitle, theme_secondary(), 16);
-  lv_obj_align(label, LV_ALIGN_BOTTOM_LEFT, 12, -2);
+  lv_obj_align(label, LV_ALIGN_BOTTOM_LEFT, 12, -1);
   return button;
 }
 
@@ -1093,8 +1304,13 @@ static void qpk_clicked(lv_event_t *e)
   card = panel_card("快应用");
   snprintf(builtin_subtitle, sizeof(builtin_subtitle), "%s · %s",
            g_builtin_qpk.kind, g_builtin_qpk.format);
-  list_button(card, g_builtin_qpk.manifest.name, builtin_subtitle, 72,
+  list_button(card, g_builtin_qpk.manifest.name, builtin_subtitle, 66,
               launch_builtin_qapp, NULL);
+
+  snprintf(builtin_subtitle, sizeof(builtin_subtitle), "%s · %s",
+           g_builtin_2048_qpk.kind, g_builtin_2048_qpk.format);
+  list_button(card, g_builtin_2048_qpk.manifest.name, builtin_subtitle, 146,
+              launch_builtin_2048_qapp, NULL);
 
   for (i = 0; i < g_desktop.nqpk && i < 4; i++)
     {
@@ -1105,7 +1321,7 @@ static void qpk_clicked(lv_event_t *e)
                g_desktop.qpk[i].dir,
                g_desktop.qpk[i].version[0] ? g_desktop.qpk[i].version :
                "QPK");
-      list_button(card, g_desktop.qpk[i].name, subtitle, 154 + i * 80,
+      list_button(card, g_desktop.qpk[i].name, subtitle, 226 + i * 80,
                   external_qapp_clicked, (void *)(intptr_t)i);
     }
 
@@ -1552,6 +1768,8 @@ static void desktop_ui_create(void)
 {
   lv_obj_t *screen = lv_screen_active();
   size_t font_size = (size_t)(g_desktop_font_end - g_desktop_font_start);
+  size_t number_font_size =
+    (size_t)(g_desktop_number_font_end - g_desktop_number_font_start);
 
   memset(&g_desktop, 0, sizeof(g_desktop));
   g_desktop.font16 = lv_tiny_ttf_create_data(g_desktop_font_start,
@@ -1562,6 +1780,15 @@ static void desktop_ui_create(void)
                                               font_size, 28);
   g_desktop.font48 = lv_tiny_ttf_create_data(g_desktop_font_start,
                                               font_size, 48);
+  g_desktop.number_font32 =
+    lv_tiny_ttf_create_data(g_desktop_number_font_start,
+                            number_font_size, 32);
+  g_desktop.number_font40 =
+    lv_tiny_ttf_create_data(g_desktop_number_font_start,
+                            number_font_size, 40);
+  g_desktop.number_font48 =
+    lv_tiny_ttf_create_data(g_desktop_number_font_start,
+                            number_font_size, 48);
   g_desktop.screen = screen;
   lv_obj_set_style_bg_color(screen, lv_color_hex(0x090d18), 0);
   g_desktop.statusbar = statusbar_create(screen);

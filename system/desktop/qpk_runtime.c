@@ -37,6 +37,7 @@
 enum qpk_widget_type_e
 {
   QPK_WIDGET_LABEL = 0,
+  QPK_WIDGET_NUMBER,
   QPK_WIDGET_PANEL,
   QPK_WIDGET_BUTTON
 };
@@ -63,12 +64,14 @@ struct qpk_runtime_s
   lv_obj_t *widgets[QPK_MAX_WIDGETS];
   uint8_t widget_types[QPK_MAX_WIDGETS];
   struct qpk_event_s events[QPK_MAX_EVENTS];
+  struct qpk_event_s swipe_event;
   struct qpk_timer_s timers[QPK_MAX_TIMERS];
   lv_timer_t *net_timer;
   lv_obj_t *input_shade;
   lv_obj_t *input_textarea;
   JSValue input_callback;
   qpk_font_cb_t font_cb;
+  qpk_number_font_cb_t number_font_cb;
   qpk_message_cb_t toast_cb;
   qpk_message_cb_t dialog_cb;
   char name[48];
@@ -347,6 +350,64 @@ static void qpk_event_clicked(lv_event_t *event)
   JS_FreeValue(g_qpk.context, result);
 }
 
+static void qpk_event_swiped(lv_event_t *event)
+{
+  lv_indev_t *indev = lv_event_get_indev(event);
+  const char *direction;
+  JSValue argument;
+  JSValue result;
+
+  if (g_qpk.context == NULL || !g_qpk.swipe_event.used || indev == NULL ||
+      g_qpk.input_shade != NULL)
+    {
+      return;
+    }
+
+  switch (lv_indev_get_gesture_dir(indev))
+    {
+      case LV_DIR_LEFT:
+        direction = "left";
+        break;
+      case LV_DIR_RIGHT:
+        direction = "right";
+        break;
+      case LV_DIR_TOP:
+        direction = "up";
+        break;
+      case LV_DIR_BOTTOM:
+        direction = "down";
+        break;
+      default:
+        return;
+    }
+
+  argument = JS_NewString(g_qpk.context, direction);
+  result = qpk_call_args(g_qpk.swipe_event.function, QPK_EVENT_BUDGET,
+                         1, &argument);
+  JS_FreeValue(g_qpk.context, argument);
+  JS_FreeValue(g_qpk.context, result);
+}
+
+static JSValue js_ui_on_swipe(JSContext *context,
+                              JSValueConst this_value,
+                              int argc, JSValueConst *argv)
+{
+  (void)this_value;
+  if (argc < 1 || !JS_IsFunction(context, argv[0]))
+    {
+      return JS_ThrowTypeError(context, "swipe handler must be a function");
+    }
+
+  if (g_qpk.swipe_event.used)
+    {
+      JS_FreeValue(context, g_qpk.swipe_event.function);
+    }
+
+  g_qpk.swipe_event.function = JS_DupValue(context, argv[0]);
+  g_qpk.swipe_event.used = true;
+  return JS_UNDEFINED;
+}
+
 static JSValue js_ui_text(JSContext *context, JSValueConst this_value,
                           int argc, JSValueConst *argv)
 {
@@ -375,6 +436,63 @@ static JSValue js_ui_text(JSContext *context, JSValueConst this_value,
     }
 
   handle = qpk_add_widget(label, QPK_WIDGET_LABEL);
+  JS_FreeCString(context, text);
+  if (handle == 0)
+    {
+      lv_obj_delete(label);
+      return JS_ThrowInternalError(context, "too many widgets");
+    }
+
+  return JS_NewInt32(context, handle);
+}
+
+static void qpk_number_style(lv_obj_t *label, const char *text)
+{
+  lv_obj_t *number = lv_obj_get_child(label, 0);
+  int digits = strlen(text);
+
+  if (number != NULL)
+    {
+      lv_label_set_text(number, text);
+      if (g_qpk.number_font_cb != NULL)
+        {
+          lv_obj_set_style_text_font(number,
+                                     g_qpk.number_font_cb(digits), 0);
+        }
+
+      lv_obj_center(number);
+    }
+}
+
+static JSValue js_ui_number(JSContext *context, JSValueConst this_value,
+                            int argc, JSValueConst *argv)
+{
+  const char *text;
+  lv_obj_t *label;
+  int handle;
+
+  (void)this_value;
+  text = qpk_arg_string(context, argc, argv, 0);
+  if (text == NULL)
+    {
+      return JS_EXCEPTION;
+    }
+
+  label = lv_obj_create(g_qpk.root);
+  lv_obj_set_pos(label, qpk_arg_int(context, argc, argv, 1, 0),
+                 qpk_arg_int(context, argc, argv, 2, 0));
+  lv_obj_set_size(label, qpk_arg_int(context, argc, argv, 3, 64),
+                  qpk_arg_int(context, argc, argv, 4, 64));
+  lv_obj_set_style_bg_opa(label, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(label, 0, 0);
+  lv_obj_set_style_pad_all(label, 0, 0);
+  lv_obj_remove_flag(label, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t *number = lv_label_create(label);
+  lv_label_set_text(number, text);
+  lv_obj_set_style_text_color(number,
+      lv_color_hex(qpk_arg_color(context, argc, argv, 5, 0xffffff)), 0);
+  qpk_number_style(label, text);
+  handle = qpk_add_widget(label, QPK_WIDGET_NUMBER);
   JS_FreeCString(context, text);
   if (handle == 0)
     {
@@ -415,6 +533,10 @@ static JSValue js_ui_set_text(JSContext *context,
         {
           lv_label_set_text(label, text);
         }
+    }
+  else if (g_qpk.widget_types[handle - 1] == QPK_WIDGET_NUMBER)
+    {
+      qpk_number_style(g_qpk.widgets[handle - 1], text);
     }
   else if (g_qpk.widget_types[handle - 1] == QPK_WIDGET_LABEL)
     {
@@ -495,6 +617,7 @@ static JSValue js_ui_set_color(JSContext *context,
 {
   int handle;
   uint32_t color;
+  lv_obj_t *widget;
 
   (void)this_value;
   handle = qpk_arg_int(context, argc, argv, 0, 0);
@@ -505,8 +628,36 @@ static JSValue js_ui_set_color(JSContext *context,
       return JS_ThrowRangeError(context, "invalid widget handle");
     }
 
-  lv_obj_set_style_bg_color(g_qpk.widgets[handle - 1],
-                            lv_color_hex(color), 0);
+  widget = g_qpk.widgets[handle - 1];
+  if (g_qpk.widget_types[handle - 1] == QPK_WIDGET_LABEL ||
+      g_qpk.widget_types[handle - 1] == QPK_WIDGET_NUMBER)
+    {
+      lv_obj_t *text = g_qpk.widget_types[handle - 1] == QPK_WIDGET_NUMBER ?
+                       lv_obj_get_child(widget, 0) : widget;
+      if (text != NULL)
+        {
+          lv_obj_set_style_text_color(text, lv_color_hex(color), 0);
+        }
+    }
+  else if (g_qpk.widget_types[handle - 1] == QPK_WIDGET_BUTTON)
+    {
+      lv_obj_t *label = lv_obj_get_child(widget, 0);
+
+      lv_obj_set_style_bg_color(widget, lv_color_hex(color), 0);
+      if (label != NULL)
+        {
+          unsigned int brightness = ((color >> 16) & 0xff) +
+                                    ((color >> 8) & 0xff) +
+                                    (color & 0xff);
+          lv_obj_set_style_text_color(label,
+              lv_color_hex(brightness > 510 ? 0x172033 : 0xffffff), 0);
+        }
+    }
+  else
+    {
+      lv_obj_set_style_bg_color(widget, lv_color_hex(color), 0);
+    }
+
   return JS_UNDEFINED;
 }
 
@@ -1423,6 +1574,8 @@ static void qpk_install_api(JSContext *context)
   object = JS_NewObject(context);
   JS_SetPropertyStr(context, object, "text",
                     JS_NewCFunction(context, js_ui_text, "text", 5));
+  JS_SetPropertyStr(context, object, "number",
+                    JS_NewCFunction(context, js_ui_number, "number", 6));
   JS_SetPropertyStr(context, object, "setText",
                     JS_NewCFunction(context, js_ui_set_text, "setText", 2));
   JS_SetPropertyStr(context, object, "setHidden",
@@ -1441,6 +1594,9 @@ static void qpk_install_api(JSContext *context)
                     JS_NewCFunction(context, js_ui_panel, "panel", 7));
   JS_SetPropertyStr(context, object, "button",
                     JS_NewCFunction(context, js_ui_button, "button", 7));
+  JS_SetPropertyStr(context, object, "onSwipe",
+                    JS_NewCFunction(context, js_ui_on_swipe,
+                                    "onSwipe", 1));
   JS_SetPropertyStr(context, object, "primary",
                     JS_NewUint32(context, g_qpk.primary_color));
   JS_SetPropertyStr(context, object, "secondary",
@@ -1502,6 +1658,7 @@ int qpk_runtime_launch(lv_obj_t *root, const char *name,
                        const char *package, const char *version,
                        const char *filename, const char *source,
                        size_t source_len, qpk_font_cb_t font_cb,
+                       qpk_number_font_cb_t number_font_cb,
                        qpk_message_cb_t toast_cb,
                        qpk_message_cb_t dialog_cb)
 {
@@ -1519,6 +1676,7 @@ int qpk_runtime_launch(lv_obj_t *root, const char *name,
   g_qpk.input_callback = JS_UNDEFINED;
   g_qpk.root = root;
   g_qpk.font_cb = font_cb;
+  g_qpk.number_font_cb = number_font_cb;
   g_qpk.toast_cb = toast_cb;
   g_qpk.dialog_cb = dialog_cb;
   g_qpk.next_timer_id = 100;
@@ -1561,6 +1719,8 @@ int qpk_runtime_launch(lv_obj_t *root, const char *name,
     }
 
   qpk_install_api(g_qpk.context);
+  lv_obj_remove_flag(g_qpk.root, LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_add_event_cb(g_qpk.root, qpk_event_swiped, LV_EVENT_GESTURE, NULL);
   qpk_net_install(g_qpk.context);
   g_qpk.net_timer = lv_timer_create(qpk_net_timer_cb, QPK_NET_POLL_MS,
                                     NULL);
@@ -1633,6 +1793,11 @@ void qpk_runtime_stop(void)
             {
               JS_FreeValue(g_qpk.context, g_qpk.events[i].function);
             }
+        }
+
+      if (g_qpk.swipe_event.used)
+        {
+          JS_FreeValue(g_qpk.context, g_qpk.swipe_event.function);
         }
 
       JS_FreeContext(g_qpk.context);
