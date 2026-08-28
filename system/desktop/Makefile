@@ -14,7 +14,7 @@ CFLAGS += -I$(APPDIR)/include
 CFLAGS += -I$(APPDIR)/system/c6probe
 
 CSRCS   = desktop_font.c qpk_runtime.c qpk_hap.c qpk_png.c qpk_net.c \
-	  desktop_filemgr.c desktop_camera.c
+	  desktop_filemgr.c desktop_camera.c qpk_canvas.c
 ASRCS   = qpk_ca_bundle.S
 MAINSRC = desktop_main.c
 

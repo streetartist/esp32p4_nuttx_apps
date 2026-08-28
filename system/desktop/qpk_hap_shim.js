@@ -78,49 +78,6 @@
     return exp;
   }
 
-  function storageKey(group, item) {
-    var pkg = '';
-    try {
-      pkg = ($app.$def && $app.$def.manifest && $app.$def.manifest.package) ||
-            ($app.$def && $app.$def.package) || '';
-    } catch (e) {}
-    pkg = String(pkg || 'hap').replace(/[^A-Za-z0-9._-]+/g, '_');
-    return pkg + '_' + group + '_' + item;
-  }
-
-  function patchUtil(u) {
-    if (!u || typeof u !== 'object' || u.__hapPatched) return u;
-    u.__hapPatched = true;
-    if (typeof u.writeINI !== 'function') {
-      u.writeINI = function (group, item, val) {
-        try { localStorage.setItem(storageKey(group, item), String(val)); } catch (e) {}
-        if (group === 'options' && typeof u.setConfig === 'function') {
-          u.setConfig(item, val);
-        }
-      };
-    }
-    if (!u.GV && typeof Proxy === 'function') {
-      u.GV = new Proxy({}, {
-        get: function (_, key) {
-          if (typeof key !== 'string') return undefined;
-          try {
-            var raw = localStorage.getItem(storageKey('options', key));
-            if (raw === null || raw === undefined || raw === '') return 0;
-            var n = parseInt(raw, 10);
-            return isNaN(n) ? raw : n;
-          } catch (e) {
-            return 0;
-          }
-        },
-        set: function (_, key, v) {
-          if (typeof key === 'string') u.writeINI('options', key, v);
-          return true;
-        }
-      });
-    }
-    return u;
-  }
-
   function instantiate(name) {
     var rec = modules[name];
     if (!rec) return {};
@@ -147,6 +104,9 @@
     if (name === '@app-module/system.storage' || name === '@system.storage') {
       return { default: system.storage, __esModule: true };
     }
+    if (name === '@app-module/system.prompt' || name === '@system.prompt') {
+      return { default: prompt, __esModule: true };
+    }
     if (modules[name]) return instantiate(name);
     return {};
   }
@@ -160,7 +120,6 @@
     var short = shortName(name);
     if (String(name).indexOf('@app-component/') === 0) {
       var value = unwrap(exp);
-      if (short === 'util') value = patchUtil(value);
       if (value && typeof value === 'object' && !value.template) {
         $app.$def[short] = value;
       }
@@ -168,7 +127,7 @@
     if (String(name).indexOf('@app-application/') === 0) {
       var appExp = unwrap(exp) || {};
       if (appExp.manifest) $app.$def.manifest = appExp.manifest;
-      if (appExp.util) $app.$def.util = patchUtil(appExp.util);
+      if (appExp.util) $app.$def.util = appExp.util;
     }
   };
 
@@ -266,8 +225,6 @@
 
   function clampScale(n) {
     if (n !== n || n === Infinity || n === -Infinity) return 1;
-    if (n < 0.05) return 0.05;
-    if (n > 4) return 4;
     return n;
   }
 
@@ -358,19 +315,21 @@
                      st.left != null || st.right != null ||
                      st.top != null || st.bottom != null;
     if (w == null) {
-      if (positioned || node.type === 'image') w = Math.round(80 * kx);
+      if (node.type === 'image') w = 0;
+      else if (positioned) w = Math.round(80 * kx);
       else w = parent.contentW;
     }
     if (h == null) {
       var fs = px(st.fontSize, 'y');
       if (fs) h = Math.round(fs * 1.5);
-      else if (positioned || node.type === 'image') h = Math.round(80 * ky);
+      else if (node.type === 'image') h = 0;
+      else if (positioned) h = Math.round(80 * ky);
       else h = Math.round(40 * ky);
     }
-    if (w < 1) w = 1;
-    if (h < 1) h = 1;
-    if (viewW > 0 && w > viewW) w = viewW;
-    if (viewH > 0 && h > viewH) h = viewH;
+    if (node.type !== 'image') {
+      if (w < 1) w = 1;
+      if (h < 1) h = 1;
+    }
     var x;
     var y;
     if (positioned) {
@@ -449,6 +408,10 @@
         try { ui.onClick(handle, wrapEvt(click)); } catch (e) {}
       }
       slot.skipChildren = true;
+    } else if (type === 'canvas') {
+      var cobj = ui.canvas(geom.x, geom.y, geom.w, geom.h);
+      handle = cobj && cobj.handle;
+      slot.ctx = cobj;
     } else if (type === 'div' && st.backgroundColor) {
       handle = ui.panel(geom.x, geom.y, geom.w, geom.h, parseColor(st.backgroundColor), px(st.borderRadius, 'x') || 0, parseOpa(st));
     }
@@ -654,6 +617,22 @@
     }
     vm.$app = $app;
     vm.$def = def;
+    vm.$element = function (id) {
+      var i;
+      var n;
+      var slot;
+      for (i = 0; i < inst.length; i++) {
+        n = inst[i] && inst[i].node;
+        if (!n) continue;
+        if (attrOf(n, 'id') === id) {
+          slot = inst[i];
+          return {
+            getContext: function () { return slot.ctx || null; }
+          };
+        }
+      }
+      return null;
+    };
     return vm;
   }
 
@@ -689,12 +668,12 @@
     currentVm.viewportWidth = designW;
     suspendPaint = false;
     paint();
-    try {
-      if (system.battery && $app.$def.util && typeof $app.$def.util.onBatteryStatus === 'function') {
-        var st = system.battery.getStatus();
-        $app.$def.util.onBatteryStatus(!!(st && st.charging));
-      }
-    } catch (e) {}
+    if (typeof currentVm.onReady === 'function') {
+      try { currentVm.onReady(); } catch (e) { console.log(e); }
+    }
+    if (typeof currentVm.onShow === 'function') {
+      try { currentVm.onShow(); } catch (e) { console.log(e); }
+    }
   }
 
   globalThis.$app_bootstrap$ = function (name) {

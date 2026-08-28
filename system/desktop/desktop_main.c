@@ -102,6 +102,23 @@ static const struct builtin_qpk_s g_builtin_2048_qpk =
   .format = "QPK 1.0",
 };
 
+static const struct builtin_qpk_s g_builtin_face_qpk =
+{
+  .manifest =
+    {
+      .name = "表情",
+      .package = "com.example.face",
+      .version = "1.0.0",
+      .entry = "builtin:/face/index.js",
+    },
+  .kind = "互动表情",
+  .format = "QPK 1.0",
+};
+
+static const char g_face_qpk_js[] =
+#include "qpk_face.inc"
+;
+
 struct desktop_env_s
 {
   lv_obj_t *screen;
@@ -1265,6 +1282,20 @@ static void launch_builtin_2048_qapp(lv_event_t *e)
                      qpk_show_dialog);
 }
 
+static void launch_builtin_face_qapp(lv_event_t *e)
+{
+  lv_obj_t *card;
+  const struct qpk_entry_s *manifest = &g_builtin_face_qpk.manifest;
+
+  LV_UNUSED(e);
+  card = qapp_page(manifest->name);
+  qpk_runtime_launch(card, manifest->name, manifest->package,
+                     manifest->version, manifest->entry, g_face_qpk_js,
+                     sizeof(g_face_qpk_js) - 1, zh_font, number_font,
+                     show_toast,
+                     qpk_show_dialog);
+}
+
 static void external_qapp_clicked(lv_event_t *e)
 {
   intptr_t index = (intptr_t)lv_event_get_user_data(e);
@@ -1525,21 +1556,26 @@ static void qpk_clicked(lv_event_t *e)
   qpk_scan();
   card = panel_card("快应用");
   snprintf(builtin_subtitle, sizeof(builtin_subtitle), "%s · %s",
+           g_builtin_face_qpk.kind, g_builtin_face_qpk.format);
+  list_button(card, g_builtin_face_qpk.manifest.name, builtin_subtitle, 66, 690,
+              launch_builtin_face_qapp, NULL);
+
+  snprintf(builtin_subtitle, sizeof(builtin_subtitle), "%s · %s",
            g_builtin_qpk.kind, g_builtin_qpk.format);
-  list_button(card, g_builtin_qpk.manifest.name, builtin_subtitle, 66, 690,
+  list_button(card, g_builtin_qpk.manifest.name, builtin_subtitle, 146, 690,
               launch_builtin_qapp, NULL);
 
   snprintf(builtin_subtitle, sizeof(builtin_subtitle), "%s · %s",
            g_builtin_2048_qpk.kind, g_builtin_2048_qpk.format);
-  list_button(card, g_builtin_2048_qpk.manifest.name, builtin_subtitle, 146,
+  list_button(card, g_builtin_2048_qpk.manifest.name, builtin_subtitle, 226,
               690, launch_builtin_2048_qapp, NULL);
 
-  for (i = 0; i < g_desktop.nqpk && i < 4; i++)
+  for (i = 0; i < g_desktop.nqpk && i < 2; i++)
     {
       char subtitle[96];
       lv_obj_t *del;
       lv_obj_t *label;
-      int y = 226 + i * 80;
+      int y = 306 + i * 80;
 
       snprintf(subtitle, sizeof(subtitle), "%s · %s",
                g_desktop.qpk[i].package[0] ? g_desktop.qpk[i].package :

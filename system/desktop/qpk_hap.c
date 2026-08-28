@@ -1,8 +1,7 @@
 /****************************************************************************
  * apps/system/desktop/qpk_hap.c
  *
- * HAP/UX shim so original Quick App RPK pages can run with only the
- * existing ui.* primitives. Router loads sibling page JS from basedir.
+ * HAP/UX shim for Quick App pages: layout, router, canvas 2d.
  ****************************************************************************/
 
 #include <errno.h>

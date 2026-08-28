@@ -23,6 +23,7 @@
 #include "qpk_hap.h"
 #include "qpk_net.h"
 #include "qpk_png.h"
+#include "qpk_canvas.h"
 
 #define QPK_MEMORY_LIMIT  (2 * 1024 * 1024)
 #define QPK_STACK_LIMIT   (64 * 1024)
@@ -162,6 +163,11 @@ static JSModuleDef *qpk_module_loader(JSContext *ctx, const char *name,
            strcmp(name, "@app-module/system.battery") == 0)
     {
       builtin = "export default globalThis.system.battery;";
+    }
+  else if (strcmp(name, "@system.prompt") == 0 ||
+           strcmp(name, "@app-module/system.prompt") == 0)
+    {
+      builtin = "export default globalThis.prompt;";
     }
   if (builtin != NULL)
     {
@@ -629,6 +635,34 @@ static double qpk_arg_double(JSContext *context, int argc,
   return value;
 }
 
+static int32_t qpk_scale_256(double factor)
+{
+  int32_t scale;
+
+  if (factor != factor)
+    {
+      return LV_SCALE_NONE;
+    }
+
+  /* Convert only. CSS scale is not clamped to a design range. */
+  if (factor > 64.0)
+    {
+      factor = 64.0;
+    }
+  else if (factor < -64.0)
+    {
+      factor = -64.0;
+    }
+
+  scale = (int32_t)(factor * 256.0);
+  if (scale == 0)
+    {
+      scale = factor < 0.0 ? -1 : 1;
+    }
+
+  return scale;
+}
+
 static void qpk_resolve_asset(const char *src, char *out, size_t outlen)
 {
   if (src == NULL || src[0] == '\0')
@@ -802,25 +836,50 @@ static void qpk_widget_plain(lv_obj_t *obj)
   lv_obj_set_style_pad_all(obj, 0, 0);
 }
 
+lv_obj_t *qpk_root_obj(void)
+{
+  return g_qpk.root;
+}
+
+int qpk_widget_add(lv_obj_t *object, int type)
+{
+  return qpk_add_widget(object, (enum qpk_widget_type_e)type);
+}
+
+void qpk_widget_style_plain(lv_obj_t *obj)
+{
+  qpk_widget_plain(obj);
+}
+
 static void qpk_image_fit(lv_obj_t *image, int width, int height)
 {
+  const void *src = lv_image_get_src(image);
+  int nw = 0;
+  int nh = 0;
+
+  if (src != NULL && lv_image_src_get_type(src) == LV_IMAGE_SRC_VARIABLE)
+    {
+      const lv_image_dsc_t *dsc = src;
+
+      nw = (int)dsc->header.w;
+      nh = (int)dsc->header.h;
+    }
+
   if (width < 1)
     {
-      width = 1;
+      width = nw > 0 ? nw : 1;
     }
 
   if (height < 1)
     {
-      height = 1;
+      height = nh > 0 ? nh : 1;
     }
 
-  /* Fill the widget box. Image zoom is left at 1x so CSS
-   * transform (ui.setScale) can compose on top instead of
-   * multiplying with dest/native zoom.
+  /* object-fit:fill — bitmap fills the box. Image zoom stays 1x
+   * so ui.setScale is only the CSS transform.
    */
   lv_obj_remove_flag(image, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_remove_flag(image, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_remove_flag(image, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
   lv_obj_set_scrollbar_mode(image, LV_SCROLLBAR_MODE_OFF);
   lv_image_set_scale_x(image, LV_SCALE_NONE);
   lv_image_set_scale_y(image, LV_SCALE_NONE);
@@ -995,26 +1054,8 @@ static JSValue js_ui_set_scale(JSContext *context,
     }
 
   widget = g_qpk.widgets[handle - 1];
-  sx = (int32_t)(qpk_arg_double(context, argc, argv, 1, 1.0) * 256.0);
-  sy = (int32_t)(qpk_arg_double(context, argc, argv, 2, 1.0) * 256.0);
-  if (sx < 13)
-    {
-      sx = 13;
-    }
-  else if (sx > 1024)
-    {
-      sx = 1024;
-    }
-
-  if (sy < 13)
-    {
-      sy = 13;
-    }
-  else if (sy > 1024)
-    {
-      sy = 1024;
-    }
-
+  sx = qpk_scale_256(qpk_arg_double(context, argc, argv, 1, 1.0));
+  sy = qpk_scale_256(qpk_arg_double(context, argc, argv, 2, 1.0));
   lv_obj_set_style_transform_scale_x(widget, sx, 0);
   lv_obj_set_style_transform_scale_y(widget, sy, 0);
   return JS_UNDEFINED;
@@ -2624,6 +2665,7 @@ static void qpk_install_api(JSContext *context)
                     JS_NewCFunction(context, js_ui_clear, "clear", 0));
   JS_SetPropertyStr(context, object, "setOpa",
                     JS_NewCFunction(context, js_ui_set_opa, "setOpa", 2));
+  qpk_canvas_install(context, object);
   JS_SetPropertyStr(context, object, "primary",
                     JS_NewUint32(context, g_qpk.primary_color));
   JS_SetPropertyStr(context, object, "secondary",
