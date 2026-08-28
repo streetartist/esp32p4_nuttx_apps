@@ -37,6 +37,7 @@
 #include "qpk_runtime.h"
 #include "qpk_net.h"
 #include "desktop_filemgr.h"
+#include "desktop_camera.h"
 
 #define QPK_DIR       CONFIG_SYSTEM_DESKTOP_QPK_DIR
 #define MAX_QPK       8
@@ -622,6 +623,7 @@ static void wifi_modal_forget(void)
 
 static void panel_content_forget(void)
 {
+  desktop_camera_stop();
   g_desktop.wifi_status_label = NULL;
   wifi_modal_forget();
   g_desktop.toast = NULL;
@@ -1658,6 +1660,22 @@ static void filemgr_clicked(lv_event_t *e)
   lv_obj_set_pos(label, 24, 82);
 }
 
+static void camera_clicked(lv_event_t *e)
+{
+  lv_obj_t *card;
+  lv_obj_t *label;
+  int ret;
+
+  LV_UNUSED(e);
+  card = panel_card("摄像头");
+  ret = desktop_camera_start(card, zh_font(20));
+  if (ret < 0)
+    {
+      label = make_label(card, "无法启动摄像头", 0xff8e8e, 20);
+      lv_obj_center(label);
+    }
+}
+
 static void settings_clicked(lv_event_t *e)
 {
   lv_obj_t *card;
@@ -1669,40 +1687,53 @@ static void settings_clicked(lv_event_t *e)
 
   LV_UNUSED(e);
   card = panel_card("设置");
-  setting_row(card, "浅色桌面", "切换桌面背景与应用卡片", 82,
+  setting_row(card, "浅色桌面", "切换桌面背景与应用卡片", 68,
               g_desktop.light_theme, theme_changed);
 
   label = make_label(card, "Wi-Fi", theme_primary(), 20);
-  lv_obj_set_pos(label, 28, 164);
+  lv_obj_set_pos(label, 28, 140);
   wifi_get_snapshot(&snapshot);
   wifi_status_text(&snapshot, status, sizeof(status));
   g_desktop.wifi_status_label = make_label(card, status,
                                             theme_secondary(), 16);
   lv_label_set_long_mode(g_desktop.wifi_status_label, LV_LABEL_LONG_DOT);
   lv_obj_set_size(g_desktop.wifi_status_label, 480, 28);
-  lv_obj_set_pos(g_desktop.wifi_status_label, 28, 194);
+  lv_obj_set_pos(g_desktop.wifi_status_label, 28, 170);
 
   button = lv_button_create(card);
   lv_obj_set_size(button, 150, 50);
-  lv_obj_set_pos(button, 558, 166);
+  lv_obj_set_pos(button, 558, 142);
   lv_obj_set_style_bg_color(button, lv_color_hex(0x5267d8), 0);
   lv_obj_add_event_cb(button, wifi_config_clicked, LV_EVENT_CLICKED, NULL);
   label = make_label(button, "配置", 0xffffff, 20);
   lv_obj_center(label);
 
   label = make_label(card, "文件管理", theme_primary(), 20);
-  lv_obj_set_pos(label, 28, 244);
+  lv_obj_set_pos(label, 28, 212);
   label = make_label(card, "通过局域网浏览器管理 /data",
                      theme_secondary(), 16);
-  lv_obj_set_pos(label, 28, 274);
+  lv_obj_set_pos(label, 28, 242);
 
   button = lv_button_create(card);
   lv_obj_set_size(button, 150, 50);
-  lv_obj_set_pos(button, 558, 246);
+  lv_obj_set_pos(button, 558, 214);
   lv_obj_set_style_bg_color(button, lv_color_hex(0x31927a), 0);
   lv_obj_add_event_cb(button, filemgr_clicked, LV_EVENT_CLICKED, NULL);
   label = make_label(button, desktop_filemgr_running() ? "打开" : "启动",
                      0xffffff, 20);
+  lv_obj_center(label);
+
+  label = make_label(card, "摄像头", theme_primary(), 20);
+  lv_obj_set_pos(label, 28, 284);
+  label = make_label(card, "SC2336  1280 x 720", theme_secondary(), 16);
+  lv_obj_set_pos(label, 28, 314);
+
+  button = lv_button_create(card);
+  lv_obj_set_size(button, 150, 50);
+  lv_obj_set_pos(button, 558, 286);
+  lv_obj_set_style_bg_color(button, lv_color_hex(0x5267d8), 0);
+  lv_obj_add_event_cb(button, camera_clicked, LV_EVENT_CLICKED, NULL);
+  label = make_label(button, "打开", 0xffffff, 20);
   lv_obj_center(label);
 
   snprintf(info, sizeof(info),
@@ -1711,7 +1742,7 @@ static void settings_clicked(lv_event_t *e)
            "NuttX 桌面 · 已发现 %d 个外部 QPK",
            g_desktop.nqpk);
   label = make_label(card, info, theme_secondary(), 16);
-  lv_obj_set_pos(label, 28, 350);
+  lv_obj_set_pos(label, 28, 360);
 
   wifi_ui_timer_cb(NULL);
 }
