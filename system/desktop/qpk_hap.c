@@ -29,7 +29,6 @@ static char g_hap_pending[HAP_PATH_MAX];
 static lv_timer_t *g_hap_nav_timer;
 static int g_hap_sp;
 static bool g_hap_pending_push;
-static bool g_hap_ignored_config;
 
 static void hap_nav_cb(lv_timer_t *timer);
 
@@ -266,19 +265,6 @@ static JSValue js_hap_push(JSContext *context, JSValueConst this_value,
   printf("[qpk] router.push %s -> %s%s\n", text,
          ret == 0 ? path : "?",
          qpk_in_js_timer() ? " (timer)" : "");
-  if (ret == 0 && qpk_in_js_timer() &&
-      strstr(text, "config") != NULL)
-    {
-      if (!g_hap_ignored_config)
-        {
-          printf("[qpk] ignore auto config navigation from tick\n");
-          g_hap_ignored_config = true;
-        }
-
-      JS_FreeCString(context, text);
-      return JS_UNDEFINED;
-    }
-
   JS_FreeCString(context, text);
   if (ret == 0)
     {
@@ -364,6 +350,5 @@ void qpk_hap_reset(void)
 
   g_hap_pending[0] = '\0';
   g_hap_pending_push = false;
-  g_hap_ignored_config = false;
   g_hap_sp = 0;
 }

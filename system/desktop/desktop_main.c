@@ -1164,15 +1164,14 @@ static lv_obj_t *qapp_page(const char *title)
   lv_obj_remove_flag(g_desktop.panel, LV_OBJ_FLAG_HIDDEN);
   panel_content_forget();
   lv_obj_clean(g_desktop.panel);
-  lv_obj_set_style_bg_color(g_desktop.panel,
-                            lv_color_hex(theme_card()), 0);
+  lv_obj_set_style_bg_color(g_desktop.panel, lv_color_hex(0x000000), 0);
   lv_obj_set_style_bg_opa(g_desktop.panel, LV_OPA_COVER, 0);
   lv_obj_set_style_pad_all(g_desktop.panel, 0, 0);
 
   page = lv_obj_create(g_desktop.panel);
   g_desktop.current_card = page;
   lv_obj_set_size(page, lv_pct(100), lv_pct(100));
-  lv_obj_set_style_bg_color(page, lv_color_hex(theme_card()), 0);
+  lv_obj_set_style_bg_color(page, lv_color_hex(0x000000), 0);
   lv_obj_set_style_border_width(page, 0, 0);
   lv_obj_set_style_radius(page, 0, 0);
   lv_obj_set_style_pad_all(page, 0, 0);
@@ -1196,7 +1195,14 @@ static lv_obj_t *qapp_page(const char *title)
   content = lv_obj_create(page);
   lv_obj_update_layout(page);
   height = lv_obj_get_height(page) - QAPP_HEADER_HEIGHT;
-  lv_obj_set_size(content, lv_pct(100), height);
+  if (height < 64)
+    {
+      height = lv_display_get_vertical_resolution(NULL) -
+               QAPP_HEADER_HEIGHT;
+    }
+
+  lv_obj_set_width(content, lv_pct(100));
+  lv_obj_set_height(content, height);
   lv_obj_align(content, LV_ALIGN_BOTTOM_MID, 0, 0);
   lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(content, 0, 0);
@@ -1204,6 +1210,7 @@ static lv_obj_t *qapp_page(const char *title)
   lv_obj_set_style_pad_all(content, 0, 0);
   lv_obj_remove_flag(content, LV_OBJ_FLAG_SCROLLABLE |
                               LV_OBJ_FLAG_GESTURE_BUBBLE);
+  lv_obj_update_layout(content);
 
   left_edge = lv_obj_create(page);
   lv_obj_set_pos(left_edge, 0, QAPP_HEADER_HEIGHT);

@@ -32,6 +32,25 @@
 
   globalThis.$translateStyle$ = translateStyle;
 
+  (function () {
+    if (!globalThis.localStorage || typeof localStorage.setItem !== 'function') return;
+    var orig = localStorage.setItem.bind(localStorage);
+    var pending = {};
+    var timer = 0;
+    localStorage.setItem = function (key, value) {
+      pending[String(key)] = String(value == null ? '' : value);
+      if (timer) return;
+      timer = setTimeout(function () {
+        var k;
+        timer = 0;
+        for (k in pending) {
+          try { orig(k, pending[k]); } catch (e) {}
+        }
+        pending = {};
+      }, 250);
+    };
+  })();
+
   var modules = {};
   var currentVm = null;
   var inst = [];
@@ -42,6 +61,9 @@
   var ky = 1;
   var viewW = 1280;
   var viewH = 720;
+  var viewScale = 1;
+  var viewOx = 0;
+  var viewOy = 0;
 
   var $app = { $def: {} };
   globalThis.$app = $app;
@@ -56,32 +78,45 @@
     return exp;
   }
 
+  function storageKey(group, item) {
+    var pkg = '';
+    try {
+      pkg = ($app.$def && $app.$def.manifest && $app.$def.manifest.package) ||
+            ($app.$def && $app.$def.package) || '';
+    } catch (e) {}
+    pkg = String(pkg || 'hap').replace(/[^A-Za-z0-9._-]+/g, '_');
+    return pkg + '_' + group + '_' + item;
+  }
+
   function patchUtil(u) {
     if (!u || typeof u !== 'object' || u.__hapPatched) return u;
     u.__hapPatched = true;
     if (typeof u.writeINI !== 'function') {
       u.writeINI = function (group, item, val) {
-        try { localStorage.setItem('ouo_' + group + '_' + item, String(val)); } catch (e) {}
+        try { localStorage.setItem(storageKey(group, item), String(val)); } catch (e) {}
         if (group === 'options' && typeof u.setConfig === 'function') {
           u.setConfig(item, val);
         }
       };
     }
-    if (!u.GV) {
-      u.GV = {
-        get lockEmotions() {
-          try { return parseInt(localStorage.getItem('ouo_options_lock_emotions')) || 0; } catch (e) { return 0; }
+    if (!u.GV && typeof Proxy === 'function') {
+      u.GV = new Proxy({}, {
+        get: function (_, key) {
+          if (typeof key !== 'string') return undefined;
+          try {
+            var raw = localStorage.getItem(storageKey('options', key));
+            if (raw === null || raw === undefined || raw === '') return 0;
+            var n = parseInt(raw, 10);
+            return isNaN(n) ? raw : n;
+          } catch (e) {
+            return 0;
+          }
         },
-        set lockEmotions(v) { u.writeINI('options', 'lock_emotions', v); },
-        get staticMood() {
-          try { return parseInt(localStorage.getItem('ouo_options_static_mood')) || 0; } catch (e) { return 0; }
-        },
-        set staticMood(v) { u.writeINI('options', 'static_mood', v); },
-        get debug() {
-          try { return parseInt(localStorage.getItem('ouo_options_debug')) || 0; } catch (e) { return 0; }
-        },
-        set debug(v) { u.writeINI('options', 'debug', v); }
-      };
+        set: function (_, key, v) {
+          if (typeof key === 'string') u.writeINI('options', key, v);
+          return true;
+        }
+      });
     }
     return u;
   }
@@ -137,11 +172,19 @@
     }
   };
 
-  function px(v, axis) {
+  function px(v, axis, parentLen) {
     if (v == null || v === '') return null;
     if (typeof v === 'number') return Math.round(v * (axis === 'x' ? kx : ky));
-    var s = String(v);
-    if (s.charAt(s.length - 1) === '%') return null;
+    var s = String(v).replace(/^\s+|\s+$/g, '');
+    if (!s || s === 'undefined' || s === 'null' || s.indexOf('undefined') >= 0) {
+      return null;
+    }
+    if (s.charAt(s.length - 1) === '%') {
+      var p = parseFloat(s);
+      if (isNaN(p)) return null;
+      var base = parentLen != null ? parentLen : (axis === 'x' ? viewW : viewH);
+      return Math.round(base * p / 100);
+    }
     var n = parseFloat(s);
     if (isNaN(n)) return null;
     return Math.round(n * (axis === 'x' ? kx : ky));
@@ -169,10 +212,17 @@
     return Math.max(0, Math.min(255, Math.round(n)));
   }
 
+  function classNames(node) {
+    var list = node && node.classList;
+    if (!list) return [];
+    if (typeof list === 'string') return list.replace(/^\s+|\s+$/g, '').split(/\s+/);
+    return list;
+  }
+
   function mergeStyle(node) {
     var st = {};
     var sheet = (currentVm && currentVm.$def && currentVm.$def.style) || {};
-    var list = node.classList || [];
+    var list = classNames(node);
     for (var i = 0; i < list.length; i++) {
       var key = list[i];
       if (!key) continue;
@@ -184,7 +234,19 @@
       try { inline = inline.call(currentVm); } catch (e) { inline = null; }
     }
     if (typeof inline === 'string') inline = translateStyle(inline);
-    if (inline && typeof inline === 'object') Object.assign(st, inline);
+    if (inline && typeof inline === 'object') {
+      var sk;
+      for (sk in inline) {
+        if (!Object.prototype.hasOwnProperty.call(inline, sk)) continue;
+        var sv = inline[sk];
+        if (typeof sv === 'function') {
+          try { sv = sv.call(currentVm); } catch (e) { sv = undefined; }
+        }
+        if (sv === undefined || sv === null || sv === '') continue;
+        if (typeof sv === 'string' && sv.indexOf('undefined') >= 0) continue;
+        st[sk] = sv;
+      }
+    }
     return st;
   }
 
@@ -202,26 +264,44 @@
     try { return !!node.shown.call(currentVm); } catch (e) { return true; }
   }
 
+  function clampScale(n) {
+    if (n !== n || n === Infinity || n === -Infinity) return 1;
+    if (n < 0.05) return 0.05;
+    if (n > 4) return 4;
+    return n;
+  }
+
   function applyTransform(handle, st, w, h) {
     if (!handle || !ui.setScale) return;
     var t = st.transform || '';
     var sx = 1;
     var sy = 1;
     var rot = 0;
-    var m = t.match(/scale\(([^)]+)\)/);
-    if (m) {
-      var p = m[1].split(',');
-      sx = parseFloat(p[0]);
-      sy = p.length > 1 ? parseFloat(p[1]) : sx;
-      if (isNaN(sx)) sx = 1;
-      if (isNaN(sy)) sy = 1;
+    var m;
+    if (t) {
+      m = t.match(/scale\(([^)]+)\)/);
+      if (m) {
+        var p = m[1].split(',');
+        sx = parseFloat(p[0]);
+        sy = p.length > 1 ? parseFloat(p[1]) : sx;
+        if (isNaN(sx)) sx = 1;
+        if (isNaN(sy)) sy = 1;
+      }
+      m = t.match(/scaleX\(([^)]+)\)/);
+      if (m) {
+        sx = parseFloat(m[1]);
+        if (isNaN(sx)) sx = 1;
+      }
+      m = t.match(/scaleY\(([^)]+)\)/);
+      if (m) {
+        sy = parseFloat(m[1]);
+        if (isNaN(sy)) sy = 1;
+      }
+      m = t.match(/rotate\(([-0-9.]+)deg\)/);
+      if (m) rot = parseFloat(m[1]) || 0;
     }
-    m = t.match(/scaleX\(([^)]+)\)/);
-    if (m) sx = parseFloat(m[1]) || sx;
-    m = t.match(/scaleY\(([^)]+)\)/);
-    if (m) sy = parseFloat(m[1]) || sy;
-    m = t.match(/rotate\(([-0-9.]+)deg\)/);
-    if (m) rot = parseFloat(m[1]) || 0;
+    sx = clampScale(sx);
+    sy = clampScale(sy);
     var origin = String(st.transformOrigin || 'center center').split(/\s+/);
     var ox = Math.round(w / 2);
     var oy = Math.round(h / 2);
@@ -272,16 +352,28 @@
 
   function layout(node, parent) {
     var st = mergeStyle(node);
-    var w = px(st.width, 'x');
-    var h = px(st.height, 'y');
-    if (w == null) w = parent.contentW;
+    var w = px(st.width, 'x', parent.contentW);
+    var h = px(st.height, 'y', parent.contentH);
+    var positioned = st.position === 'absolute' || st.position === 'fixed' ||
+                     st.left != null || st.right != null ||
+                     st.top != null || st.bottom != null;
+    if (w == null) {
+      if (positioned || node.type === 'image') w = Math.round(80 * kx);
+      else w = parent.contentW;
+    }
     if (h == null) {
       var fs = px(st.fontSize, 'y');
-      h = fs ? Math.round(fs * 1.5) : Math.round(40 * ky);
+      if (fs) h = Math.round(fs * 1.5);
+      else if (positioned || node.type === 'image') h = Math.round(80 * ky);
+      else h = Math.round(40 * ky);
     }
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (viewW > 0 && w > viewW) w = viewW;
+    if (viewH > 0 && h > viewH) h = viewH;
     var x;
     var y;
-    if (st.position === 'absolute') {
+    if (positioned) {
       if (st.left != null) x = parent.x + (px(st.left, 'x') || 0);
       else if (st.right != null) x = parent.x + parent.w - (px(st.right, 'x') || 0) - w;
       else x = parent.x;
@@ -350,9 +442,14 @@
       if (node.children && node.children[0] && node.children[0].type === 'text') {
         label = attrOf(node.children[0], 'value') || '';
       }
-      handle = ui.button(String(label), geom.x, geom.y, geom.w, geom.h, wrapEvt(click), parseColor(st.backgroundColor || '#3a3a50'));
+      if (st.backgroundColor || label) {
+        handle = ui.button(String(label), geom.x, geom.y, geom.w, geom.h, wrapEvt(click), parseColor(st.backgroundColor || '#3a3a50'));
+      } else {
+        handle = ui.panel(geom.x, geom.y, geom.w, geom.h, 0x000000, 0, 0);
+        try { ui.onClick(handle, wrapEvt(click)); } catch (e) {}
+      }
       slot.skipChildren = true;
-    } else if (type === 'div' && st.backgroundColor && st.position === 'absolute') {
+    } else if (type === 'div' && st.backgroundColor) {
       handle = ui.panel(geom.x, geom.y, geom.w, geom.h, parseColor(st.backgroundColor), px(st.borderRadius, 'x') || 0, parseOpa(st));
     }
     if (handle && click && type !== 'div') {
@@ -366,15 +463,37 @@
     slot.node = node;
   }
 
+  function toDesignX(px) {
+    var scale = viewScale || 1;
+    var x = (px - viewOx) / scale;
+    if (x < 0) x = 0;
+    if (x > designW) x = designW;
+    return x;
+  }
+
+  function toDesignY(px) {
+    var scale = viewScale || 1;
+    var y = (px - viewOy) / scale;
+    if (y < 0) y = 0;
+    if (y > designH) y = designH;
+    return y;
+  }
+
   function bindTouch(node) {
     ui.onTouch(function (e) {
-      var t = { clientX: e.x, pageX: e.x, clientY: e.y, pageY: e.y };
-      var evt = { touches: [t], type: e.type };
+      var x = toDesignX(e.x);
+      var y = toDesignY(e.y);
+      var t = {
+        clientX: x, pageX: x, globalX: x,
+        clientY: y, pageY: y, globalY: y
+      };
+      var evt = { touches: [t], changedTouches: [t], type: e.type };
       try {
         if (e.type === 'start' && node.events.touchstart) node.events.touchstart.call(currentVm, evt);
         else if (e.type === 'move' && node.events.touchmove) node.events.touchmove.call(currentVm, evt);
         else if (e.type === 'end' && node.events.touchend) node.events.touchend.call(currentVm, evt);
       } catch (err) { console.log(err); }
+      dirtyPaint();
     });
   }
 
@@ -383,13 +502,23 @@
     if (!handle) return;
     if (ui.setHidden) ui.setHidden(handle, visible ? 0 : 1);
     if (!visible) return;
-    ui.setPos(handle, geom.x, geom.y);
+    if (slot.x !== geom.x || slot.y !== geom.y) {
+      ui.setPos(handle, geom.x, geom.y);
+      slot.x = geom.x;
+      slot.y = geom.y;
+    }
+    if (ui.setSize && slot.type !== 'text' &&
+        (slot.w !== geom.w || slot.h !== geom.h)) {
+      ui.setSize(handle, Math.max(1, geom.w), Math.max(1, geom.h));
+      slot.w = geom.w;
+      slot.h = geom.h;
+    }
+    applyTransform(handle, geom.st, geom.w, geom.h);
     if (slot.type === 'image') {
       var src = attrOf(node, 'src');
       if (src && src !== slot.src) {
         try { ui.setImage(handle, src); slot.src = src; } catch (e) {}
       }
-      applyTransform(handle, geom.st, geom.w, geom.h);
       if (ui.setOpa) ui.setOpa(handle, parseOpa(geom.st));
     } else if (slot.type === 'text') {
       var val = attrOf(node, 'value');
@@ -441,22 +570,78 @@
   function paint() {
     if (!currentVm || !currentVm.$def || !currentVm.$def.template) return;
     var size = ui.getSize();
-    viewW = size.width || 1280;
-    viewH = size.height || 720;
-    kx = viewW / designW;
-    ky = viewH / designH;
+    viewW = size.width || 0;
+    viewH = size.height || 0;
+    if (viewW < 64) viewW = designW;
+    if (viewH < 64) viewH = designH;
+    var sx = viewW / designW;
+    var sy = viewH / designH;
+    var scale = sx < sy ? sx : sy;
+    if (scale <= 0) scale = 1;
+    kx = scale;
+    ky = scale;
+    var usedW = Math.round(designW * scale);
+    var usedH = Math.round(designH * scale);
+    var ox = Math.floor((viewW - usedW) / 2);
+    var oy = Math.floor((viewH - usedH) / 2);
+    viewScale = scale;
+    viewOx = ox;
+    viewOy = oy;
     walkIndex = 0;
     walk(currentVm.$def.template, {
-      x: 0, y: 0, w: viewW, h: viewH,
-      contentW: viewW, contentH: viewH,
-      cx: 0, cy: 0, dir: 'column', justify: 'flex-start',
+      x: ox, y: oy, w: usedW, h: usedH,
+      contentW: usedW, contentH: usedH,
+      cx: ox, cy: oy, dir: 'column', justify: 'flex-start',
       childIndex: 0, childTotal: 1, padL: 0, padT: 0
     });
   }
 
+  var paintPending = false;
+  var suspendPaint = false;
+
+  function dirtyPaint() {
+    if (suspendPaint || paintPending || !currentVm) return;
+    paintPending = true;
+    if (typeof setTimeout === 'function') {
+      setTimeout(function () {
+        paintPending = false;
+        if (currentVm) paint();
+      }, 16);
+    } else {
+      paintPending = false;
+      paint();
+    }
+  }
+
+  function collectData(def) {
+    var data = {};
+    function add(obj) {
+      var k;
+      if (!obj || typeof obj !== 'object') return;
+      for (k in obj) {
+        if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
+        if (typeof obj[k] === 'function') continue;
+        if (data[k] === undefined) data[k] = obj[k];
+      }
+    }
+    add(def.data);
+    add(def.private);
+    add(def.public);
+    add(def.protected);
+    return data;
+  }
+
+  function wrapMethod(fn) {
+    return function () {
+      var r = fn.apply(this, arguments);
+      dirtyPaint();
+      return r;
+    };
+  }
+
   function createVm(def) {
     var vm = {};
-    var data = def.data || def.private || {};
+    var data = collectData(def);
     var k;
     for (k in data) vm[k] = data[k];
     for (k in def) {
@@ -464,38 +649,45 @@
           k === 'data' || k === 'template' || k === 'style' || k === '_descriptor') {
         continue;
       }
-      if (typeof def[k] === 'function') vm[k] = def[k];
+      if (typeof def[k] === 'function') vm[k] = wrapMethod(def[k]);
       else if (vm[k] === undefined) vm[k] = def[k];
     }
     vm.$app = $app;
     vm.$def = def;
-    if (typeof vm.onStateUpdate === 'function') {
-      var orig = vm.onStateUpdate;
-      vm.onStateUpdate = function (rs) {
-        orig.call(this, rs);
-        paint();
-      };
-    }
     return vm;
   }
 
+  function adoptDesign(w, h) {
+    if (w && String(w).indexOf('%') < 0) {
+      var nw = parseFloat(w);
+      if (nw >= 64) designW = nw;
+    }
+    if (h && String(h).indexOf('%') < 0) {
+      var nh = parseFloat(h);
+      if (nh >= 64) designH = nh;
+    }
+  }
+
   function mount(def) {
+    designW = 1280;
+    designH = 720;
+    paintPending = false;
+    try {
+      var man = $app.$def && $app.$def.manifest;
+      if (man) adoptDesign(man.designWidth, man.designHeight);
+    } catch (e) {}
     if (def.style && def.style['.stage']) {
-      var stage = def.style['.stage'];
-      if (stage.width) designW = parseFloat(stage.width) || designW;
-      if (stage.height) designH = parseFloat(stage.height) || designH;
+      adoptDesign(def.style['.stage'].width, def.style['.stage'].height);
     }
-    if (def.style && def.style['.config-stage']) {
-      var cs = def.style['.config-stage'];
-      if (cs.width) designW = parseFloat(cs.width) || designW;
-      if (cs.height) designH = parseFloat(cs.height) || designH;
-    }
-    ui.background(0x1a1a2e);
+    ui.background(parseColor((def.style && def.style['.stage'] &&
+      def.style['.stage'].backgroundColor) || '#000000'));
     currentVm = createVm(def);
-    paint();
+    suspendPaint = true;
     if (typeof currentVm.onInit === 'function') {
       try { currentVm.onInit(); } catch (e) { console.log(e); }
     }
+    currentVm.viewportWidth = designW;
+    suspendPaint = false;
     paint();
     try {
       if (system.battery && $app.$def.util && typeof $app.$def.util.onBatteryStatus === 'function') {
@@ -548,6 +740,9 @@
     inst = [];
     modules = {};
     pendingName = null;
+    paintPending = false;
+    designW = 1280;
+    designH = 720;
     $app.$def = {};
     if (ui.clear) ui.clear();
   };

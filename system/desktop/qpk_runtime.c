@@ -71,6 +71,7 @@ struct qpk_timer_s
   lv_timer_t *timer;
   int id;
   bool used;
+  bool once;
 };
 
 struct qpk_runtime_s
@@ -107,6 +108,8 @@ struct qpk_runtime_s
 
 static struct qpk_runtime_s g_qpk;
 static bool g_in_js_timer;
+
+static void qpk_timer_clear(struct qpk_timer_s *binding);
 
 static char *qpk_module_normalize(JSContext *ctx, const char *base,
                                   const char *name, void *opaque)
@@ -428,6 +431,12 @@ void qpk_clear_page(void)
 {
   int i;
 
+  if (g_qpk.root != NULL)
+    {
+      lv_obj_set_style_bg_color(g_qpk.root, lv_color_hex(0x000000), 0);
+      lv_obj_set_style_bg_opa(g_qpk.root, LV_OPA_COVER, 0);
+    }
+
   if (g_qpk.context == NULL)
     {
       return;
@@ -435,13 +444,7 @@ void qpk_clear_page(void)
 
   for (i = 0; i < QPK_MAX_TIMERS; i++)
     {
-      if (g_qpk.timers[i].used)
-        {
-          lv_timer_delete(g_qpk.timers[i].timer);
-          JS_FreeValue(g_qpk.context, g_qpk.timers[i].function);
-          g_qpk.timers[i].timer = NULL;
-          g_qpk.timers[i].used = false;
-        }
+      qpk_timer_clear(&g_qpk.timers[i]);
     }
 
   for (i = 0; i < QPK_MAX_EVENTS; i++)
@@ -463,11 +466,6 @@ void qpk_clear_page(void)
     {
       if (g_qpk.widgets[i] != NULL)
         {
-          if (g_qpk.widget_types[i] == QPK_WIDGET_IMAGE)
-            {
-              lv_image_set_src(g_qpk.widgets[i], NULL);
-            }
-
           lv_obj_delete(g_qpk.widgets[i]);
           g_qpk.widgets[i] = NULL;
         }
@@ -795,6 +793,44 @@ static lv_image_dsc_t *qpk_image_get(const char *src)
   return &g_qpk.images[slot].dsc;
 }
 
+static void qpk_widget_plain(lv_obj_t *obj)
+{
+  lv_obj_set_style_anim_duration(obj, 0, 0);
+  lv_obj_set_style_border_width(obj, 0, 0);
+  lv_obj_set_style_shadow_width(obj, 0, 0);
+  lv_obj_set_style_outline_width(obj, 0, 0);
+  lv_obj_set_style_pad_all(obj, 0, 0);
+}
+
+static void qpk_image_fit(lv_obj_t *image, int width, int height)
+{
+  if (width < 1)
+    {
+      width = 1;
+    }
+
+  if (height < 1)
+    {
+      height = 1;
+    }
+
+  /* Fill the widget box. Image zoom is left at 1x so CSS
+   * transform (ui.setScale) can compose on top instead of
+   * multiplying with dest/native zoom.
+   */
+  lv_obj_remove_flag(image, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_remove_flag(image, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_remove_flag(image, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+  lv_obj_set_scrollbar_mode(image, LV_SCROLLBAR_MODE_OFF);
+  lv_image_set_scale_x(image, LV_SCALE_NONE);
+  lv_image_set_scale_y(image, LV_SCALE_NONE);
+  lv_image_set_pivot(image, 0, 0);
+  lv_obj_set_size(image, width, height);
+  lv_image_set_inner_align(image, LV_IMAGE_ALIGN_STRETCH);
+  qpk_widget_plain(image);
+  lv_obj_set_style_bg_opa(image, LV_OPA_TRANSP, 0);
+}
+
 static JSValue js_ui_image(JSContext *context, JSValueConst this_value,
                            int argc, JSValueConst *argv)
 {
@@ -820,13 +856,15 @@ static JSValue js_ui_image(JSContext *context, JSValueConst this_value,
     }
 
   image = lv_image_create(g_qpk.root);
+  qpk_widget_plain(image);
+  lv_obj_remove_flag(image, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_remove_flag(image, LV_OBJ_FLAG_CLICKABLE);
   lv_image_set_src(image, dsc);
   lv_obj_set_pos(image, qpk_arg_int(context, argc, argv, 1, 0),
                  qpk_arg_int(context, argc, argv, 2, 0));
   width = qpk_arg_int(context, argc, argv, 3, (int)dsc->header.w);
   height = qpk_arg_int(context, argc, argv, 4, (int)dsc->header.h);
-  lv_obj_set_size(image, width, height);
-  lv_image_set_inner_align(image, LV_IMAGE_ALIGN_STRETCH);
+  qpk_image_fit(image, width, height);
   handle = qpk_add_widget(image, QPK_WIDGET_IMAGE);
   if (handle == 0)
     {
@@ -843,7 +881,10 @@ static JSValue js_ui_set_image(JSContext *context,
 {
   const char *src;
   lv_image_dsc_t *dsc;
+  lv_obj_t *widget;
   int handle;
+  int width;
+  int height;
 
   (void)this_value;
   handle = qpk_arg_int(context, argc, argv, 0, 0);
@@ -868,7 +909,11 @@ static JSValue js_ui_set_image(JSContext *context,
       return JS_ThrowTypeError(context, "cannot load image");
     }
 
-  lv_image_set_src(g_qpk.widgets[handle - 1], dsc);
+  widget = g_qpk.widgets[handle - 1];
+  width = lv_obj_get_width(widget);
+  height = lv_obj_get_height(widget);
+  lv_image_set_src(widget, dsc);
+  qpk_image_fit(widget, width, height);
   return JS_UNDEFINED;
 }
 
@@ -892,6 +937,46 @@ static JSValue js_ui_set_pos(JSContext *context,
   return JS_UNDEFINED;
 }
 
+static JSValue js_ui_set_size(JSContext *context,
+                              JSValueConst this_value,
+                              int argc, JSValueConst *argv)
+{
+  int handle;
+  int width;
+  int height;
+
+  (void)this_value;
+  handle = qpk_arg_int(context, argc, argv, 0, 0);
+  if (handle <= 0 || handle > QPK_MAX_WIDGETS ||
+      g_qpk.widgets[handle - 1] == NULL)
+    {
+      return JS_ThrowRangeError(context, "invalid widget handle");
+    }
+
+  width = qpk_arg_int(context, argc, argv, 1, 1);
+  height = qpk_arg_int(context, argc, argv, 2, 1);
+  if (g_qpk.widget_types[handle - 1] == QPK_WIDGET_IMAGE)
+    {
+      qpk_image_fit(g_qpk.widgets[handle - 1], width, height);
+    }
+  else
+    {
+      if (width < 1)
+        {
+          width = 1;
+        }
+
+      if (height < 1)
+        {
+          height = 1;
+        }
+
+      lv_obj_set_size(g_qpk.widgets[handle - 1], width, height);
+    }
+
+  return JS_UNDEFINED;
+}
+
 static JSValue js_ui_set_scale(JSContext *context,
                                JSValueConst this_value,
                                int argc, JSValueConst *argv)
@@ -912,6 +997,24 @@ static JSValue js_ui_set_scale(JSContext *context,
   widget = g_qpk.widgets[handle - 1];
   sx = (int32_t)(qpk_arg_double(context, argc, argv, 1, 1.0) * 256.0);
   sy = (int32_t)(qpk_arg_double(context, argc, argv, 2, 1.0) * 256.0);
+  if (sx < 13)
+    {
+      sx = 13;
+    }
+  else if (sx > 1024)
+    {
+      sx = 1024;
+    }
+
+  if (sy < 13)
+    {
+      sy = 13;
+    }
+  else if (sy > 1024)
+    {
+      sy = 1024;
+    }
+
   lv_obj_set_style_transform_scale_x(widget, sx, 0);
   lv_obj_set_style_transform_scale_y(widget, sy, 0);
   return JS_UNDEFINED;
@@ -1022,14 +1125,17 @@ static JSValue js_ui_on_touch(JSContext *context,
     {
       JS_FreeValue(context, g_qpk.touch_event.function);
     }
+  else if (g_qpk.root != NULL)
+    {
+      lv_obj_add_flag(g_qpk.root, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_add_event_cb(g_qpk.root, qpk_event_touch, LV_EVENT_PRESSED, NULL);
+      lv_obj_add_event_cb(g_qpk.root, qpk_event_touch, LV_EVENT_PRESSING, NULL);
+      lv_obj_add_event_cb(g_qpk.root, qpk_event_touch, LV_EVENT_RELEASED, NULL);
+      lv_obj_add_event_cb(g_qpk.root, qpk_event_touch, LV_EVENT_PRESS_LOST, NULL);
+    }
 
   g_qpk.touch_event.function = JS_DupValue(context, argv[0]);
   g_qpk.touch_event.used = true;
-  lv_obj_add_flag(g_qpk.root, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(g_qpk.root, qpk_event_touch, LV_EVENT_PRESSED, NULL);
-  lv_obj_add_event_cb(g_qpk.root, qpk_event_touch, LV_EVENT_PRESSING, NULL);
-  lv_obj_add_event_cb(g_qpk.root, qpk_event_touch, LV_EVENT_RELEASED, NULL);
-  lv_obj_add_event_cb(g_qpk.root, qpk_event_touch, LV_EVENT_PRESS_LOST, NULL);
   return JS_UNDEFINED;
 }
 
@@ -1144,6 +1250,7 @@ static JSValue js_ui_on_click(JSContext *context, JSValueConst this_value,
   binding->function = JS_DupValue(context, argv[1]);
   binding->used = true;
   lv_obj_add_flag(g_qpk.widgets[handle - 1], LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_ext_click_area(g_qpk.widgets[handle - 1], 16);
   lv_obj_add_event_cb(g_qpk.widgets[handle - 1], qpk_event_clicked,
                       LV_EVENT_CLICKED, binding);
   return JS_UNDEFINED;
@@ -1263,6 +1370,7 @@ static JSValue js_ui_text(JSContext *context, JSValueConst this_value,
 
   size = qpk_arg_int(context, argc, argv, 3, 20);
   label = lv_label_create(g_qpk.root);
+  qpk_widget_plain(label);
   lv_label_set_text(label, text);
   lv_obj_set_pos(label, qpk_arg_int(context, argc, argv, 1, 24),
                  qpk_arg_int(context, argc, argv, 2, 80));
@@ -1317,6 +1425,7 @@ static JSValue js_ui_number(JSContext *context, JSValueConst this_value,
     }
 
   label = lv_obj_create(g_qpk.root);
+  qpk_widget_plain(label);
   lv_obj_set_pos(label, qpk_arg_int(context, argc, argv, 1, 0),
                  qpk_arg_int(context, argc, argv, 2, 0));
   lv_obj_set_size(label, qpk_arg_int(context, argc, argv, 3, 64),
@@ -1436,16 +1545,32 @@ static JSValue js_ui_get_size(JSContext *context,
                               int argc, JSValueConst *argv)
 {
   JSValue size;
+  int32_t width;
+  int32_t height;
 
   (void)this_value;
   (void)argc;
   (void)argv;
   lv_obj_update_layout(g_qpk.root);
+  width = lv_obj_get_width(g_qpk.root);
+  height = lv_obj_get_height(g_qpk.root);
+  if (width < 64)
+    {
+      width = lv_display_get_horizontal_resolution(NULL);
+    }
+
+  if (height < 64)
+    {
+      height = lv_display_get_vertical_resolution(NULL);
+      if (height > 64)
+        {
+          height -= 64;
+        }
+    }
+
   size = JS_NewObject(context);
-  JS_SetPropertyStr(context, size, "width",
-                    JS_NewInt32(context, lv_obj_get_width(g_qpk.root)));
-  JS_SetPropertyStr(context, size, "height",
-                    JS_NewInt32(context, lv_obj_get_height(g_qpk.root)));
+  JS_SetPropertyStr(context, size, "width", JS_NewInt32(context, width));
+  JS_SetPropertyStr(context, size, "height", JS_NewInt32(context, height));
   return size;
 }
 
@@ -1482,6 +1607,7 @@ static JSValue js_ui_set_color(JSContext *context,
       lv_obj_t *label = lv_obj_get_child(widget, 0);
 
       lv_obj_set_style_bg_color(widget, lv_color_hex(color), 0);
+      lv_obj_set_style_bg_opa(widget, LV_OPA_COVER, 0);
       if (label != NULL)
         {
           unsigned int brightness = ((color >> 16) & 0xff) +
@@ -1513,6 +1639,7 @@ static JSValue js_ui_panel(JSContext *context, JSValueConst this_value,
       return JS_ThrowInternalError(context, "cannot create panel");
     }
 
+  qpk_widget_plain(panel);
   lv_obj_set_pos(panel, qpk_arg_int(context, argc, argv, 0, 0),
                  qpk_arg_int(context, argc, argv, 1, 0));
   lv_obj_set_size(panel, qpk_arg_int(context, argc, argv, 2, 100),
@@ -1587,6 +1714,7 @@ static JSValue js_ui_button(JSContext *context, JSValueConst this_value,
     }
 
   button = lv_button_create(g_qpk.root);
+  qpk_widget_plain(button);
   lv_obj_set_pos(button, qpk_arg_int(context, argc, argv, 1, 220),
                  qpk_arg_int(context, argc, argv, 2, 160));
   lv_obj_set_size(button, qpk_arg_int(context, argc, argv, 3, 300),
@@ -1596,6 +1724,7 @@ static JSValue js_ui_button(JSContext *context, JSValueConst this_value,
                ((button_color >> 8) & 0xff) + (button_color & 0xff);
   text_color = brightness > 510 ? 0x172033 : 0xffffff;
   lv_obj_set_style_bg_color(button, lv_color_hex(button_color), 0);
+  lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(button, 14, 0);
   label = lv_label_create(button);
   lv_label_set_text(label, text);
@@ -1748,10 +1877,6 @@ static int qpk_storage_write(const char *path, const char *value,
     {
       ret = errno == 0 ? -EIO : -errno;
     }
-  else if (fflush(stream) != 0 || fsync(fileno(stream)) < 0)
-    {
-      ret = -errno;
-    }
 
   if (fclose(stream) != 0 && ret == 0)
     {
@@ -1769,7 +1894,6 @@ static int qpk_storage_write(const char *path, const char *value,
       return ret;
     }
 
-  sync();
   return 0;
 }
 
@@ -2263,37 +2387,58 @@ static JSValue js_prompt_dialog(JSContext *context,
   return JS_UNDEFINED;
 }
 
+static void qpk_timer_clear(struct qpk_timer_s *binding)
+{
+  if (binding == NULL || !binding->used)
+    {
+      return;
+    }
+
+  if (binding->timer != NULL)
+    {
+      lv_timer_delete(binding->timer);
+      binding->timer = NULL;
+    }
+
+  if (g_qpk.context != NULL)
+    {
+      JS_FreeValue(g_qpk.context, binding->function);
+    }
+
+  binding->used = false;
+  binding->once = false;
+}
+
 static void qpk_timer_cb(lv_timer_t *timer)
 {
   struct qpk_timer_s *binding = lv_timer_get_user_data(timer);
   JSValue result;
+  bool once;
 
   if (g_qpk.context == NULL || binding == NULL || !binding->used)
     {
       return;
     }
 
+  once = binding->once;
   g_in_js_timer = true;
   result = qpk_call(binding->function, QPK_EVENT_BUDGET);
   g_in_js_timer = false;
-  if (JS_IsException(result))
+  if (JS_IsException(result) || once)
     {
-      JS_FreeValue(g_qpk.context, binding->function);
-      binding->used = false;
-      binding->timer = NULL;
-      lv_timer_delete(timer);
+      qpk_timer_clear(binding);
     }
 
   JS_FreeValue(g_qpk.context, result);
 }
 
-static JSValue js_set_interval(JSContext *context,
-                               JSValueConst this_value,
-                               int argc, JSValueConst *argv)
+static JSValue js_set_timer(JSContext *context, JSValueConst this_value,
+                            int argc, JSValueConst *argv, bool once)
 {
   struct qpk_timer_s *binding = NULL;
   int interval;
   int i;
+  int minimum;
 
   (void)this_value;
   if (argc < 1 || !JS_IsFunction(context, argv[0]))
@@ -2301,10 +2446,11 @@ static JSValue js_set_interval(JSContext *context,
       return JS_ThrowTypeError(context, "callback must be a function");
     }
 
-  interval = qpk_arg_int(context, argc, argv, 1, 1000);
-  if (interval < 20)
+  minimum = once ? 1 : 20;
+  interval = qpk_arg_int(context, argc, argv, 1, once ? 0 : 1000);
+  if (interval < minimum)
     {
-      interval = 20;
+      interval = minimum;
     }
 
   for (i = 0; i < QPK_MAX_TIMERS; i++)
@@ -2324,15 +2470,31 @@ static JSValue js_set_interval(JSContext *context,
   binding->id = ++g_qpk.next_timer_id;
   binding->function = JS_DupValue(context, argv[0]);
   binding->used = true;
+  binding->once = once;
   binding->timer = lv_timer_create(qpk_timer_cb, interval, binding);
   if (binding->timer == NULL)
     {
       JS_FreeValue(context, binding->function);
       binding->used = false;
+      binding->once = false;
       return JS_ThrowInternalError(context, "cannot create timer");
     }
 
   return JS_NewInt32(context, binding->id);
+}
+
+static JSValue js_set_interval(JSContext *context,
+                               JSValueConst this_value,
+                               int argc, JSValueConst *argv)
+{
+  return js_set_timer(context, this_value, argc, argv, false);
+}
+
+static JSValue js_set_timeout(JSContext *context,
+                              JSValueConst this_value,
+                              int argc, JSValueConst *argv)
+{
+  return js_set_timer(context, this_value, argc, argv, true);
 }
 
 static JSValue js_clear_interval(JSContext *context,
@@ -2350,10 +2512,7 @@ static JSValue js_clear_interval(JSContext *context,
 
       if (binding->used && binding->id == id)
         {
-          lv_timer_delete(binding->timer);
-          JS_FreeValue(context, binding->function);
-          binding->timer = NULL;
-          binding->used = false;
+          qpk_timer_clear(binding);
           break;
         }
     }
@@ -2444,6 +2603,8 @@ static void qpk_install_api(JSContext *context)
                                     "setImage", 2));
   JS_SetPropertyStr(context, object, "setPos",
                     JS_NewCFunction(context, js_ui_set_pos, "setPos", 3));
+  JS_SetPropertyStr(context, object, "setSize",
+                    JS_NewCFunction(context, js_ui_set_size, "setSize", 3));
   JS_SetPropertyStr(context, object, "setScale",
                     JS_NewCFunction(context, js_ui_set_scale,
                                     "setScale", 3));
@@ -2540,6 +2701,12 @@ static void qpk_install_api(JSContext *context)
   JS_SetPropertyStr(context, global, "clearInterval",
                     JS_NewCFunction(context, js_clear_interval,
                                     "clearInterval", 1));
+  JS_SetPropertyStr(context, global, "setTimeout",
+                    JS_NewCFunction(context, js_set_timeout,
+                                    "setTimeout", 2));
+  JS_SetPropertyStr(context, global, "clearTimeout",
+                    JS_NewCFunction(context, js_clear_interval,
+                                    "clearTimeout", 1));
   JS_FreeValue(context, global);
 }
 
@@ -2564,6 +2731,13 @@ int qpk_runtime_launch(lv_obj_t *root, const char *name,
   memset(&g_qpk, 0, sizeof(g_qpk));
   g_qpk.input_callback = JS_UNDEFINED;
   g_qpk.root = root;
+  lv_obj_set_style_bg_color(root, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
+  if (lv_obj_get_parent(root) != NULL)
+    {
+      lv_obj_set_style_bg_color(lv_obj_get_parent(root),
+                                lv_color_hex(0x000000), 0);
+    }
   g_qpk.font_cb = font_cb;
   g_qpk.number_font_cb = number_font_cb;
   g_qpk.toast_cb = toast_cb;
@@ -2697,11 +2871,7 @@ void qpk_runtime_stop(void)
 
       for (i = 0; i < QPK_MAX_TIMERS; i++)
         {
-          if (g_qpk.timers[i].used)
-            {
-              lv_timer_delete(g_qpk.timers[i].timer);
-              JS_FreeValue(g_qpk.context, g_qpk.timers[i].function);
-            }
+          qpk_timer_clear(&g_qpk.timers[i]);
         }
 
       for (i = 0; i < QPK_MAX_EVENTS; i++)
