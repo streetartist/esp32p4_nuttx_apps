@@ -132,6 +132,8 @@ struct desktop_env_s
 };
 
 static struct desktop_env_s g_desktop;
+static char g_qpk_delete_dir[64];
+static char g_qpk_delete_name[NAME_MAXLEN];
 
 enum wifi_state_e
 {
@@ -1043,57 +1045,82 @@ static void qpk_show_dialog(const char *text)
   lv_obj_center(label);
 }
 
+static char *qpk_read_js(const char *filename, size_t *source_size)
+{
+  FILE *file;
+  struct stat st;
+  char *source;
+  size_t got;
+
+  if (stat(filename, &st) < 0 || !S_ISREG(st.st_mode) ||
+      st.st_size <= 0 || st.st_size > 128 * 1024)
+    {
+      return NULL;
+    }
+
+  file = fopen(filename, "rb");
+  if (file == NULL)
+    {
+      return NULL;
+    }
+
+  source = malloc((size_t)st.st_size + 1);
+  if (source == NULL)
+    {
+      fclose(file);
+      return NULL;
+    }
+
+  got = fread(source, 1, (size_t)st.st_size, file);
+  fclose(file);
+  if (got != (size_t)st.st_size)
+    {
+      free(source);
+      return NULL;
+    }
+
+  source[got] = '\0';
+  *source_size = got;
+  return source;
+}
+
 static char *qpk_load_entry(const struct qpk_entry_s *qpk,
                             char *filename, size_t filename_size,
                             size_t *source_size)
 {
-  static const char *patterns[] = {"%s/%s/%s", "%s/%s/%s.js",
-                                   "%s/%s/%s/index.js"};
-  FILE *file;
+  const char *entry = qpk->entry[0] ? qpk->entry : "pages/index";
   char *source;
-  long size;
-  size_t got;
   int i;
+  const char *patterns[] = {
+    "%s/%s/%s/index.js",
+    "%s/%s/%s.js",
+    "%s/%s/pages/index/index.js",
+    "%s/%s/app.js"
+  };
 
-  for (i = 0; i < 3; i++)
+  for (i = 0; i < 4; i++)
     {
-      if (snprintf(filename, filename_size, patterns[i], QPK_DIR, qpk->dir,
-                   qpk->entry[0] ? qpk->entry : "app.js") >= filename_size)
+      if (i < 2)
+        {
+          if (snprintf(filename, filename_size, patterns[i], QPK_DIR,
+                       qpk->dir, entry) >= (int)filename_size)
+            {
+              continue;
+            }
+        }
+      else if (snprintf(filename, filename_size, patterns[i], QPK_DIR,
+                        qpk->dir) >= (int)filename_size)
         {
           continue;
         }
 
-      file = fopen(filename, "rb");
-      if (file == NULL)
+      source = qpk_read_js(filename, source_size);
+      if (source != NULL)
         {
-          continue;
+          printf("[qpk] entry file %s (%u bytes)\n", filename,
+                 (unsigned int)*source_size);
+          return source;
         }
-
-      if (fseek(file, 0, SEEK_END) < 0 || (size = ftell(file)) <= 0 ||
-          size > 128 * 1024 || fseek(file, 0, SEEK_SET) < 0)
-        {
-          fclose(file);
-          continue;
-        }
-
-      source = malloc((size_t)size + 1);
-      if (source == NULL)
-        {
-          fclose(file);
-          return NULL;
-        }
-
-      got = fread(source, 1, (size_t)size, file);
-      fclose(file);
-      if (got != (size_t)size)
-        {
-          free(source);
-          continue;
-        }
-
-      source[got] = '\0';
-      *source_size = got;
-      return source;
     }
 
   return NULL;
@@ -1278,14 +1305,14 @@ static void external_qapp_clicked(lv_event_t *e)
 }
 
 static lv_obj_t *list_button(lv_obj_t *parent, const char *title,
-                             const char *subtitle, int y,
+                             const char *subtitle, int y, int width,
                              lv_event_cb_t cb, void *user)
 {
   lv_obj_t *button = lv_button_create(parent);
   lv_obj_t *label;
 
-  lv_obj_set_size(button, 690, 72);
-  lv_obj_align(button, LV_ALIGN_TOP_MID, 0, y);
+  lv_obj_set_size(button, width, 72);
+  lv_obj_align(button, LV_ALIGN_TOP_LEFT, 24, y);
   lv_obj_set_style_bg_color(button, lv_color_hex(theme_surface()), 0);
   lv_obj_set_style_radius(button, 14, 0);
   lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, user);
@@ -1294,6 +1321,191 @@ static lv_obj_t *list_button(lv_obj_t *parent, const char *title,
   label = make_label(button, subtitle, theme_secondary(), 16);
   lv_obj_align(label, LV_ALIGN_BOTTOM_LEFT, 12, -1);
   return button;
+}
+
+static bool qpk_dir_safe(const char *dir)
+{
+  size_t i;
+
+  if (dir == NULL || dir[0] == '\0' || dir[0] == '.')
+    {
+      return false;
+    }
+
+  for (i = 0; dir[i] != '\0'; i++)
+    {
+      if (dir[i] == '/' || dir[i] == '\\' || dir[i] == ':')
+        {
+          return false;
+        }
+    }
+
+  return true;
+}
+
+static int path_rmtree(const char *path)
+{
+  for (; ; )
+    {
+      DIR *dp;
+      struct dirent *ent;
+      struct stat st;
+      char child[192];
+      bool found = false;
+
+      if (lstat(path, &st) < 0)
+        {
+          return -1;
+        }
+
+      if (!S_ISDIR(st.st_mode))
+        {
+          return unlink(path);
+        }
+
+      dp = opendir(path);
+      if (dp == NULL)
+        {
+          return -1;
+        }
+
+      while ((ent = readdir(dp)) != NULL)
+        {
+          if (ent->d_name[0] == '.' &&
+              (ent->d_name[1] == '\0' ||
+               (ent->d_name[1] == '.' && ent->d_name[2] == '\0')))
+            {
+              continue;
+            }
+
+          if (snprintf(child, sizeof(child), "%s/%s", path, ent->d_name) >=
+              (int)sizeof(child))
+            {
+              closedir(dp);
+              errno = ENAMETOOLONG;
+              return -1;
+            }
+
+          found = true;
+          break;
+        }
+
+      closedir(dp);
+      if (!found)
+        {
+          break;
+        }
+
+      if (path_rmtree(child) < 0)
+        {
+          return -1;
+        }
+    }
+
+  return rmdir(path);
+}
+
+static void qpk_delete_confirm_close(lv_event_t *e)
+{
+  lv_obj_delete(lv_event_get_user_data(e));
+}
+
+static void qpk_delete_do(lv_event_t *e)
+{
+  lv_obj_t *shade = lv_event_get_user_data(e);
+  char path[192];
+  int ret;
+
+  if (!qpk_dir_safe(g_qpk_delete_dir) ||
+      snprintf(path, sizeof(path), "%s/%s", QPK_DIR, g_qpk_delete_dir) >=
+      (int)sizeof(path))
+    {
+      if (shade != NULL)
+        {
+          lv_obj_delete(shade);
+        }
+
+      show_toast("无法删除该应用");
+      return;
+    }
+
+  ret = path_rmtree(path);
+  g_qpk_delete_dir[0] = '\0';
+  if (ret < 0)
+    {
+      if (shade != NULL)
+        {
+          lv_obj_delete(shade);
+        }
+
+      show_toast("删除失败");
+      return;
+    }
+
+  qpk_clicked(NULL);
+  show_toast("已删除");
+}
+
+static void qpk_delete_clicked(lv_event_t *e)
+{
+  intptr_t index = (intptr_t)lv_event_get_user_data(e);
+  struct qpk_entry_s *qpk;
+  lv_obj_t *shade;
+  lv_obj_t *box;
+  lv_obj_t *button;
+  lv_obj_t *label;
+  char text[192];
+
+  if (index < 0 || index >= g_desktop.nqpk)
+    {
+      return;
+    }
+
+  qpk = &g_desktop.qpk[index];
+  if (!qpk_dir_safe(qpk->dir))
+    {
+      show_toast("无法删除该应用");
+      return;
+    }
+
+  strlcpy(g_qpk_delete_dir, qpk->dir, sizeof(g_qpk_delete_dir));
+  strlcpy(g_qpk_delete_name, qpk->name, sizeof(g_qpk_delete_name));
+  snprintf(text, sizeof(text),
+           "确定删除「%s」？\n将移除 %s/%s 下的全部文件。",
+           g_qpk_delete_name[0] ? g_qpk_delete_name : g_qpk_delete_dir,
+           QPK_DIR, g_qpk_delete_dir);
+
+  shade = lv_obj_create(g_desktop.panel);
+  lv_obj_set_size(shade, lv_pct(100), lv_pct(100));
+  lv_obj_set_style_bg_color(shade, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(shade, LV_OPA_70, 0);
+  lv_obj_set_style_border_width(shade, 0, 0);
+  box = lv_obj_create(shade);
+  lv_obj_set_size(box, 500, 240);
+  lv_obj_center(box);
+  lv_obj_set_style_bg_color(box, lv_color_hex(theme_card()), 0);
+  lv_obj_set_style_radius(box, 18, 0);
+  label = make_label(box, text, theme_primary(), 20);
+  lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(label, 440);
+  lv_obj_align(label, LV_ALIGN_TOP_LEFT, 12, 12);
+
+  button = lv_button_create(box);
+  lv_obj_set_size(button, 96, 42);
+  lv_obj_align(button, LV_ALIGN_BOTTOM_LEFT, 8, -8);
+  lv_obj_set_style_bg_color(button, lv_color_hex(theme_surface()), 0);
+  lv_obj_add_event_cb(button, qpk_delete_confirm_close, LV_EVENT_CLICKED,
+                      shade);
+  label = make_label(button, "取消", theme_primary(), 20);
+  lv_obj_center(label);
+
+  button = lv_button_create(box);
+  lv_obj_set_size(button, 96, 42);
+  lv_obj_align(button, LV_ALIGN_BOTTOM_RIGHT, -8, -8);
+  lv_obj_set_style_bg_color(button, lv_color_hex(0xc83d4b), 0);
+  lv_obj_add_event_cb(button, qpk_delete_do, LV_EVENT_CLICKED, shade);
+  label = make_label(button, "删除", 0xffffff, 20);
+  lv_obj_center(label);
 }
 
 static void qpk_clicked(lv_event_t *e)
@@ -1307,25 +1519,38 @@ static void qpk_clicked(lv_event_t *e)
   card = panel_card("快应用");
   snprintf(builtin_subtitle, sizeof(builtin_subtitle), "%s · %s",
            g_builtin_qpk.kind, g_builtin_qpk.format);
-  list_button(card, g_builtin_qpk.manifest.name, builtin_subtitle, 66,
+  list_button(card, g_builtin_qpk.manifest.name, builtin_subtitle, 66, 690,
               launch_builtin_qapp, NULL);
 
   snprintf(builtin_subtitle, sizeof(builtin_subtitle), "%s · %s",
            g_builtin_2048_qpk.kind, g_builtin_2048_qpk.format);
   list_button(card, g_builtin_2048_qpk.manifest.name, builtin_subtitle, 146,
-              launch_builtin_2048_qapp, NULL);
+              690, launch_builtin_2048_qapp, NULL);
 
   for (i = 0; i < g_desktop.nqpk && i < 4; i++)
     {
       char subtitle[96];
+      lv_obj_t *del;
+      lv_obj_t *label;
+      int y = 226 + i * 80;
 
       snprintf(subtitle, sizeof(subtitle), "%s · %s",
                g_desktop.qpk[i].package[0] ? g_desktop.qpk[i].package :
                g_desktop.qpk[i].dir,
                g_desktop.qpk[i].version[0] ? g_desktop.qpk[i].version :
                "QPK");
-      list_button(card, g_desktop.qpk[i].name, subtitle, 226 + i * 80,
+      list_button(card, g_desktop.qpk[i].name, subtitle, y, 586,
                   external_qapp_clicked, (void *)(intptr_t)i);
+
+      del = lv_button_create(card);
+      lv_obj_set_size(del, 92, 72);
+      lv_obj_align(del, LV_ALIGN_TOP_RIGHT, -24, y);
+      lv_obj_set_style_bg_color(del, lv_color_hex(0xc83d4b), 0);
+      lv_obj_set_style_radius(del, 14, 0);
+      lv_obj_add_event_cb(del, qpk_delete_clicked, LV_EVENT_CLICKED,
+                          (void *)(intptr_t)i);
+      label = make_label(del, "删除", 0xffffff, 20);
+      lv_obj_center(label);
     }
 
   if (g_desktop.nqpk == 0)
@@ -1630,7 +1855,8 @@ static void filemgr_clicked(lv_event_t *e)
       snprintf(text, sizeof(text),
                "请先连接 Wi-Fi 并获取 IP 地址。\n\n"
                "连接后，局域网内的电脑或手机可以通过浏览器管理 /data。\n"
-               "支持浏览、上传、下载、新建目录和删除文件。");
+               "支持浏览、上传、下载、新建目录和删除。"
+               "zip / rpk / qpk 在浏览器中解压后写入 /data。");
     }
   else
     {
@@ -1649,7 +1875,8 @@ static void filemgr_clicked(lv_event_t *e)
                    "浏览器地址：http://%s:%d/\n"
                    "访问码：%s\n\n"
                    "在同一个局域网内打开地址，首次访问输入访问码。\n"
-                   "所有操作都限制在 /data 目录内。",
+                   "所有操作都限制在 /data 目录内。"
+                   "zip / rpk / qpk 会在浏览器里解压，再把文件写入设备。",
                    snapshot.ip, CONFIG_SYSTEM_DESKTOP_FILEMGR_PORT, token);
         }
     }

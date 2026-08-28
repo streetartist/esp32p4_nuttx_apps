@@ -73,110 +73,8 @@ static struct fm_server_s g_fm =
 };
 
 static const char g_fm_html[] =
-  "<!doctype html><html lang=\"zh-CN\"><head>"
-  "<meta charset=\"utf-8\"><meta name=\"viewport\" "
-  "content=\"width=device-width,initial-scale=1\">"
-  "<title>NuttX 文件管理</title><style>"
-  ":root{color-scheme:light dark;--bg:#f4f6f9;--panel:#fff;--text:#172033;"
-  "--muted:#687386;--line:#d9dee7;--blue:#3659c9;--danger:#c83d4b}"
-  "@media(prefers-color-scheme:dark){:root{--bg:#101521;--panel:#171e2c;"
-  "--text:#f4f6fb;--muted:#9ba6ba;--line:#303a4d;--blue:#7890ee;"
-  "--danger:#ef7180}}*{box-sizing:border-box}body{margin:0;background:var(--bg);"
-  "color:var(--text);font:15px system-ui,sans-serif}header{height:58px;"
-  "display:flex;align-items:center;justify-content:space-between;padding:0 24px;"
-  "background:var(--panel);border-bottom:1px solid var(--line)}h1{font-size:19px;"
-  "margin:0;letter-spacing:0}.status{color:var(--muted);font-size:13px}"
-  "main{max-width:980px;margin:22px auto;padding:0 18px}.toolbar{display:flex;"
-  "gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}.path{flex:1;"
-  "min-width:220px;padding:9px 11px;background:var(--panel);border:1px solid "
-  "var(--line);border-radius:6px;overflow:hidden;text-overflow:ellipsis}"
-  "button,.upload{border:1px solid var(--line);background:var(--panel);"
-  "color:var(--text);padding:9px 13px;border-radius:6px;cursor:pointer;"
-  "font:inherit}button:hover,.upload:hover{border-color:var(--blue)}"
-  ".primary{background:var(--blue);border-color:var(--blue);color:#fff}"
-  ".upload input{display:none}.table{background:var(--panel);border:1px solid "
-  "var(--line);border-radius:8px;overflow:hidden}.row{display:grid;"
-  "grid-template-columns:minmax(180px,1fr) 100px 160px;align-items:center;"
-  "min-height:52px;padding:0 14px;border-bottom:1px solid var(--line);gap:12px}"
-  ".row:last-child{border-bottom:0}.name{display:flex;gap:10px;align-items:center;"
-  "min-width:0}.name button{border:0;padding:4px;background:transparent;"
-  "color:var(--text);overflow:hidden;text-overflow:ellipsis;text-align:left;"
-  "white-space:nowrap}.kind{width:28px;color:var(--muted);font-size:12px}"
-  ".size{color:var(--muted);font-variant-numeric:tabular-nums}.actions{display:flex;"
-  "justify-content:flex-end;gap:6px}.actions button{padding:6px 9px;font-size:13px}"
-  ".danger{color:var(--danger)}.empty{padding:48px;text-align:center;"
-  "color:var(--muted)}.message{min-height:24px;margin-top:12px;color:var(--muted)}"
-  ".progress{display:block;width:100%;height:8px;accent-color:var(--blue)}"
-  ".progress[hidden]{display:none}"
-  "@media(max-width:620px){header{padding:0 16px}.row{grid-template-columns:1fr "
-  "auto}.size{display:none}.actions{grid-column:1/-1;justify-content:flex-start;"
-  "padding-bottom:10px}}</style></head><body>"
-  "<header><h1>NuttX 文件管理</h1><span class=\"status\">/data</span></header>"
-  "<main><div class=\"toolbar\"><button id=\"up\">上一级</button>"
-  "<div class=\"path\" id=\"path\">/</div><button id=\"mkdir\">新建目录</button>"
-  "<label class=\"upload primary\">上传文件<input id=\"files\" type=\"file\" "
-  "multiple></label></div><div class=\"table\" id=\"list\"></div>"
-  "<div class=\"message\" id=\"message\"></div>"
-  "<progress class=\"progress\" id=\"progress\" max=\"100\" value=\"0\" "
-  "hidden></progress></main><script>"
-  "const qs=new URLSearchParams(location.search);let key=qs.get('key')||"
-  "sessionStorage.getItem('fmkey')||'';if(!key){key=prompt('请输入设备上显示的访问码')"
-  "||''}if(key)sessionStorage.setItem('fmkey',key);let path='/',freeBytes=null,"
-  "knownFiles=new Map();"
-  "const list=document.getElementById('list'),msg=document.getElementById('message'),"
-  "pathEl=document.getElementById('path'),progress=document.getElementById('progress'),"
-  "maxName=" FM_STRINGIFY(CONFIG_NAME_MAX) ";"
-  "function api(route,p){const q=new "
-  "URLSearchParams(p||{});q.set('key',key);return route+'?'+q}"
-  "function join(a,b){return(a==='/'?'':a)+'/'+b}function size(n){if(n<1024)"
-  "return n+' B';if(n<1048576)return(n/1024).toFixed(1)+' KB';return"
-  "(n/1048576).toFixed(1)+' MB'}function el(tag,cls,text){const n=document."
-  "createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;"
-  "return n}async function request(url,opt){const r=await fetch(url,opt);if(!r.ok){let t="
-  "await r.text();throw new Error(t||('HTTP '+r.status))}return r}"
-  "function message(t,bad){msg.textContent=t;msg.style.color=bad?'var(--danger)':''}"
-  "async function refresh(){message('正在读取目录');try{const r=await request(api"
-  "('/api/list',{path}));const data=await r.json();pathEl.textContent=data.path;"
-  "freeBytes=Number.isFinite(data.free)?data.free:null;knownFiles=new Map(data.items."
-  "filter(x=>!x.dir).map(x=>[x.name,x.size]));"
-  "list.replaceChildren();if(!data.items.length)list.append(el('div','empty',"
-  "'此目录为空'));for(const item of data.items){const row=el('div','row');const "
-  "name=el('div','name');name.append(el('span','kind',item.dir?'目录':'文件'));"
-  "const open=el('button','',item.name);open.onclick=()=>item.dir?openDir(item.name):"
-  "download(item.name);name.append(open);row.append(name,el('div','size',item.dir?"
-  "'--':size(item.size)));const actions=el('div','actions');if(!item.dir){const d="
-  "el('button','','下载');d.onclick=()=>download(item.name);actions.append(d)}const "
-  "del=el('button','danger','删除');del.onclick=()=>removeItem(item);actions.append"
-  "(del);row.append(actions);list.append(row)}message(data.items.length+' 个项目'+"
-  "(freeBytes===null?'':' · 可用 '+size(freeBytes)))}"
-  "catch(e){list.replaceChildren();list.append(el('div','empty','无法读取目录'));"
-  "message(e.message,true)}}function openDir(n){path=join(path,n);refresh()}"
-  "function download(n){const a=document.createElement('a');a.href=api('/api/download',"
-  "{path:join(path,n)});a.download=n;a.click()}async function removeItem(item){if(!confirm"
-  "('确定删除 '+item.name+'？'))return;try{await request(api('/api/delete',{path:join"
-  "(path,item.name)}),{method:'DELETE'});await refresh()}catch(e){message(e.message,true)}}"
-  "document.getElementById('up').onclick=()=>{if(path==='/')return;const i=path."
-  "lastIndexOf('/');path=i<=0?'/':path.slice(0,i);refresh()};document.getElementById"
-  "('mkdir').onclick=async()=>{const name=prompt('目录名称');if(!name)return;try{await "
-  "request(api('/api/mkdir',{path:join(path,name)}),{method:'POST'});await refresh()}"
-  "catch(e){message(e.message,true)}};function upload(file){return new Promise((ok,fail)=>{"
-  "const x=new XMLHttpRequest();x.open('PUT',api('/api/upload',{path:join(path,file.name)}));"
-  "x.upload.onprogress=e=>{if(e.lengthComputable){const n=Math.round(e.loaded*100/e.total);"
-  "progress.hidden=false;progress.value=n;message('正在上传 '+file.name+' · '+n+'%')}};"
-  "x.onload=()=>x.status>=200&&x.status<300?ok():fail(new Error(x.responseText||"
-  "('HTTP '+x.status)));x.onerror=()=>fail(new Error('上传连接中断'));x.onabort=()=>"
-  "fail(new Error('上传已取消'));x.send(file)})}document.getElementById('files').onchange="
-  "async e=>{for(const file of e.target.files){const n=new Blob([file.name]).size;if(n>"
-  "maxName){e.target.value='';progress.hidden=true;message('文件名过长：'+n+' 字节，设备"
-  "最多支持 '+maxName+' 字节（中文通常每字 3 字节）',true);return}}if(freeBytes!=="
-  "null){let budget=freeBytes;for(const file of e.target.files){const old=knownFiles.get("
-  "file.name)||0;if(file.size>budget+old){e.target.value='';progress.hidden=true;message("
-  "'存储空间不足：'+file.name+' 需要 '+size(file.size)+'，当前可用 '+size(budget+old),"
-  "true);return}budget+=old-file.size}}progress.value=0;"
-  "progress.hidden=false;for(const file of e.target.files){try{"
-  "await upload(file)}catch(err){progress.hidden=true;message(err.message,true);return}}"
-  "e.target.value='';progress.hidden=true;await refresh()};"
-  "refresh();</script></body></html>";
+#include "desktop_filemgr_html.inc"
+;
 
 static int fm_send_all(int fd, const void *buffer, size_t length)
 {
@@ -1023,6 +921,68 @@ static void fm_mkdir(int fd, const char *target)
                  "Cache-Control: no-store\r\n");
 }
 
+static int fm_rmtree(const char *path)
+{
+  for (; ; )
+    {
+      DIR *dp;
+      struct dirent *ent;
+      struct stat info;
+      char child[FM_PATH_SIZE];
+      bool found = false;
+
+      if (lstat(path, &info) < 0)
+        {
+          return -1;
+        }
+
+      if (!S_ISDIR(info.st_mode))
+        {
+          return unlink(path);
+        }
+
+      dp = opendir(path);
+      if (dp == NULL)
+        {
+          return -1;
+        }
+
+      while ((ent = readdir(dp)) != NULL)
+        {
+          if (ent->d_name[0] == '.' &&
+              (ent->d_name[1] == '\0' ||
+               (ent->d_name[1] == '.' && ent->d_name[2] == '\0')))
+            {
+              continue;
+            }
+
+          if (snprintf(child, sizeof(child), "%s/%s", path, ent->d_name) >=
+              (int)sizeof(child))
+            {
+              closedir(dp);
+              errno = ENAMETOOLONG;
+              return -1;
+            }
+
+          found = true;
+          break;
+        }
+
+      closedir(dp);
+      if (!found)
+        {
+          break;
+        }
+
+      if (fm_rmtree(child) < 0)
+        {
+          return -1;
+        }
+    }
+
+  return rmdir(path);
+}
+
 static void fm_delete(int fd, const char *target)
 {
   char display[FM_PATH_SIZE];
@@ -1038,12 +998,10 @@ static void fm_delete(int fd, const char *target)
       return;
     }
 
-  ret = S_ISDIR(info.st_mode) ? rmdir(path) : unlink(path);
+  ret = S_ISDIR(info.st_mode) ? fm_rmtree(path) : unlink(path);
   if (ret < 0)
     {
-      fm_send_error(fd, errno == ENOTEMPTY ? 409 : 403,
-                    errno == ENOTEMPTY ? "Conflict" : "Forbidden",
-                    errno == ENOTEMPTY ? "目录不是空的" : "无法删除");
+      fm_send_error(fd, 403, "Forbidden", "无法删除");
       return;
     }
 

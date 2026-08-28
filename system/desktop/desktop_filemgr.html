@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NuttX 文件管理</title>
+<style>
+:root{color-scheme:light dark;--bg:#f4f6f9;--panel:#fff;--text:#172033;
+--muted:#687386;--line:#d9dee7;--blue:#3659c9;--danger:#c83d4b}
+@media(prefers-color-scheme:dark){:root{--bg:#101521;--panel:#171e2c;
+--text:#f4f6fb;--muted:#9ba6ba;--line:#303a4d;--blue:#7890ee;
+--danger:#ef7180}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px system-ui,sans-serif}
+header{height:58px;display:flex;align-items:center;justify-content:space-between;
+padding:0 24px;background:var(--panel);border-bottom:1px solid var(--line)}
+h1{font-size:19px;margin:0;letter-spacing:0}
+.status{color:var(--muted);font-size:13px}
+main{max-width:980px;margin:22px auto;padding:0 18px}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.path{flex:1;min-width:220px;padding:9px 11px;background:var(--panel);
+border:1px solid var(--line);border-radius:6px;overflow:hidden;text-overflow:ellipsis}
+button,.upload{border:1px solid var(--line);background:var(--panel);color:var(--text);
+padding:9px 13px;border-radius:6px;cursor:pointer;font:inherit}
+button:hover,.upload:hover{border-color:var(--blue)}
+.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+.upload input{display:none}
+.hint{width:100%;color:var(--muted);font-size:12px;margin:-4px 0 8px}
+.table{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.row{display:grid;grid-template-columns:minmax(180px,1fr) 100px 160px;align-items:center;
+min-height:52px;padding:0 14px;border-bottom:1px solid var(--line);gap:12px}
+.row:last-child{border-bottom:0}
+.name{display:flex;gap:10px;align-items:center;min-width:0}
+.name button{border:0;padding:4px;background:transparent;color:var(--text);
+overflow:hidden;text-overflow:ellipsis;text-align:left;white-space:nowrap}
+.kind{width:28px;color:var(--muted);font-size:12px}
+.size{color:var(--muted);font-variant-numeric:tabular-nums}
+.actions{display:flex;justify-content:flex-end;gap:6px}
+.actions button{padding:6px 9px;font-size:13px}
+.danger{color:var(--danger)}
+.empty{padding:48px;text-align:center;color:var(--muted)}
+.message{min-height:24px;margin-top:12px;color:var(--muted)}
+.progress{display:block;width:100%;height:8px;accent-color:var(--blue)}
+.progress[hidden]{display:none}
+@media(max-width:620px){header{padding:0 16px}.row{grid-template-columns:1fr auto}
+.size{display:none}.actions{grid-column:1/-1;justify-content:flex-start;padding-bottom:10px}}
+</style>
+</head>
+<body>
+<header><h1>NuttX 文件管理</h1><span class="status">/data</span></header>
+<main>
+<div class="toolbar">
+<button id="up">上一级</button>
+<div class="path" id="path">/</div>
+<button id="mkdir">新建目录</button>
+<label class="upload">上传文件<input id="files" type="file" multiple></label>
+<label class="upload primary">上传 zip/rpk/qpk<input id="packs" type="file" accept=".zip,.rpk,.qpk,application/zip"></label>
+</div>
+<div class="hint">zip / rpk / qpk 在浏览器里解压后再写入设备，芯片不做解压缩。删除目录会递归清掉里面的全部文件，可用来卸载已安装的快应用。</div>
+<div class="table" id="list"></div>
+<div class="message" id="message"></div>
+<progress class="progress" id="progress" max="100" value="0" hidden></progress>
+</main>
+<script>
+const qs=new URLSearchParams(location.search);
+let key=qs.get('key')||sessionStorage.getItem('fmkey')||'';
+if(!key){key=prompt('请输入设备上显示的访问码')||''}
+if(key)sessionStorage.setItem('fmkey',key);
+let path='/',freeBytes=null,knownFiles=new Map();
+const list=document.getElementById('list');
+const msg=document.getElementById('message');
+const pathEl=document.getElementById('path');
+const progress=document.getElementById('progress');
+const maxName=%%NAME_MAX%%;
+function api(route,p){
+  const q=new URLSearchParams(p||{});
+  q.set('key',key);
+  return route+'?'+q;
+}
+function join(a,b){return(a==='/'?'':a)+'/'+b}
+function size(n){
+  if(n<1024)return n+' B';
+  if(n<1048576)return(n/1024).toFixed(1)+' KB';
+  return(n/1048576).toFixed(1)+' MB';
+}
+function el(tag,cls,text){
+  const n=document.createElement(tag);
+  if(cls)n.className=cls;
+  if(text!==undefined)n.textContent=text;
+  return n;
+}
+async function request(url,opt){
+  const r=await fetch(url,opt);
+  if(!r.ok){
+    let t=await r.text();
+    throw new Error(t||('HTTP '+r.status));
+  }
+  return r;
+}
+function message(t,bad){
+  msg.textContent=t;
+  msg.style.color=bad?'var(--danger)':'';
+}
+async function refresh(){
+  message('正在读取目录');
+  try{
+    const r=await request(api('/api/list',{path}));
+    const data=await r.json();
+    pathEl.textContent=data.path;
+    freeBytes=Number.isFinite(data.free)?data.free:null;
+    knownFiles=new Map(data.items.filter(x=>!x.dir).map(x=>[x.name,x.size]));
+    list.replaceChildren();
+    if(!data.items.length)list.append(el('div','empty','此目录为空'));
+    for(const item of data.items){
+      const row=el('div','row');
+      const name=el('div','name');
+      name.append(el('span','kind',item.dir?'目录':'文件'));
+      const open=el('button','',item.name);
+      open.onclick=()=>item.dir?openDir(item.name):download(item.name);
+      name.append(open);
+      row.append(name,el('div','size',item.dir?'--':size(item.size)));
+      const actions=el('div','actions');
+      if(!item.dir){
+        const d=el('button','','下载');
+        d.onclick=()=>download(item.name);
+        actions.append(d);
+      }
+      const del=el('button','danger','删除');
+      del.onclick=()=>removeItem(item);
+      actions.append(del);
+      row.append(actions);
+      list.append(row);
+    }
+    message(data.items.length+' 个项目'+(freeBytes===null?'':' · 可用 '+size(freeBytes)));
+  }catch(e){
+    list.replaceChildren();
+    list.append(el('div','empty','无法读取目录'));
+    message(e.message,true);
+  }
+}
+function openDir(n){path=join(path,n);refresh()}
+function download(n){
+  const a=document.createElement('a');
+  a.href=api('/api/download',{path:join(path,n)});
+  a.download=n;
+  a.click();
+}
+async function removeItem(item){
+  const hint=item.dir
+    ?'确定删除目录 '+item.name+' 及其全部内容？不可恢复。'
+    :'确定删除 '+item.name+'？';
+  if(!confirm(hint))return;
+  try{
+    await request(api('/api/delete',{path:join(path,item.name)}),{method:'DELETE'});
+    await refresh();
+  }catch(e){message(e.message,true)}
+}
+document.getElementById('up').onclick=()=>{
+  if(path==='/')return;
+  const i=path.lastIndexOf('/');
+  path=i<=0?'/':path.slice(0,i);
+  refresh();
+};
+document.getElementById('mkdir').onclick=async()=>{
+  const name=prompt('目录名称');
+  if(!name)return;
+  try{
+    await request(api('/api/mkdir',{path:join(path,name)}),{method:'POST'});
+    await refresh();
+  }catch(e){message(e.message,true)}
+};
+function upload(file, destPath){
+  const target=destPath||join(path,file.name);
+  return new Promise((ok,fail)=>{
+    const x=new XMLHttpRequest();
+    x.open('PUT',api('/api/upload',{path:target}));
+    x.upload.onprogress=e=>{
+      if(e.lengthComputable){
+        const n=Math.round(e.loaded*100/e.total);
+        progress.hidden=false;
+        progress.value=n;
+        message('正在上传 '+(destPath||file.name)+' · '+n+'%');
+      }
+    };
+    x.onload=()=>x.status>=200&&x.status<300?ok():fail(new Error(x.responseText||('HTTP '+x.status)));
+    x.onerror=()=>fail(new Error('上传连接中断'));
+    x.onabort=()=>fail(new Error('上传已取消'));
+    x.send(file);
+  });
+}
+function isPack(file){return /\.(zip|rpk|qpk)$/i.test(file.name)}
+function u16(v,o){return v[o]|v[o+1]<<8}
+function u32(v,o){return (v[o]|v[o+1]<<8|v[o+2]<<16|v[o+3]<<24)>>>0}
+function skipEntry(name){
+  const n=name.replace(/\\/g,'/');
+  const base=n.split('/').pop();
+  if(!base||base==='.DS_Store'||base==='Thumbs.db')return true;
+  if(n==='__MACOSX'||n.startsWith('__MACOSX/')||n.includes('/__MACOSX/'))return true;
+  return false;
+}
+async function inflateRaw(bytes){
+  if(typeof DecompressionStream!=='function'){
+    throw new Error('当前浏览器无法解压 zip，请使用 Chrome / Edge / 新版 Safari');
+  }
+  const out=await new Response(new Blob([bytes]).stream().pipeThrough(
+    new DecompressionStream('deflate-raw'))).arrayBuffer();
+  return new Uint8Array(out);
+}
+async function unzip(buf){
+  const v=new Uint8Array(buf);
+  let eocd=-1;
+  const min=Math.max(0,v.length-22-65535);
+  for(let i=v.length-22;i>=min;i--){
+    if(v[i]===0x50&&v[i+1]===0x4b&&v[i+2]===0x05&&v[i+3]===0x06){eocd=i;break}
+  }
+  if(eocd<0)throw new Error('不是有效的 zip / rpk / qpk');
+  const count=u16(v,eocd+10);
+  let off=u32(v,eocd+16);
+  if(count===0xffff||off===0xffffffff)throw new Error('暂不支持 ZIP64 压缩包');
+  const files=[];
+  for(let i=0;i<count;i++){
+    if(u32(v,off)!==0x02014b50)throw new Error('压缩包目录损坏');
+    const flags=u16(v,off+8);
+    const method=u16(v,off+10);
+    const csz=u32(v,off+20);
+    const nlen=u16(v,off+28);
+    const xlen=u16(v,off+30);
+    const clen=u16(v,off+32);
+    const local=u32(v,off+42);
+    const name=new TextDecoder().decode(v.subarray(off+46,off+46+nlen)).replace(/\\/g,'/');
+    off+=46+nlen+xlen+clen;
+    if(!name||name.endsWith('/')||skipEntry(name))continue;
+    if(flags&1)throw new Error('不支持加密压缩包');
+    if(u32(v,local)!==0x04034b50)throw new Error('压缩包条目损坏：'+name);
+    const ln=u16(v,local+26),lx=u16(v,local+28);
+    const data=v.subarray(local+30+ln+lx,local+30+ln+lx+csz);
+    let raw;
+    if(method===0)raw=data;
+    else if(method===8)raw=await inflateRaw(data);
+    else throw new Error('不支持的压缩方式（'+method+'）：'+name);
+    files.push({name:name.replace(/^\/+/,''),data:raw});
+  }
+  return files;
+}
+function withManifestPrefix(files){
+  const direct=files.find(f=>f.name==='manifest.json');
+  if(direct)return files;
+  const nested=files.find(f=>/^[^/]+\/manifest.json$/.test(f.name));
+  if(!nested)return files;
+  const prefix=nested.name.slice(0,nested.name.indexOf('/')+1);
+  if(!files.every(f=>f.name.startsWith(prefix)))return files;
+  return files.map(f=>({name:f.name.slice(prefix.length),data:f.data})).filter(f=>f.name);
+}
+function safeId(s){
+  return String(s||'').toLowerCase().replace(/[^a-z0-9._-]+/g,'-').replace(/^[-.]+|[-.]+$/g,'').slice(0,32);
+}
+function packDest(files,filename){
+  const ready=withManifestPrefix(files);
+  const manifest=ready.find(f=>f.name==='manifest.json');
+  if(!manifest){
+    return {files:files,dest:path,app:false};
+  }
+  let id='';
+  try{
+    const parsed=JSON.parse(new TextDecoder().decode(manifest.data));
+    id=safeId(parsed.name)||safeId((parsed.package||'').split('.').pop());
+  }catch(err){}
+  if(!id)id=safeId(filename.replace(/\.(zip|rpk|qpk)$/i,''));
+  return {files:ready,dest:'/qpk/'+(id||'app'),app:true};
+}
+function checkRel(rel){
+  const parts=rel.split('/').filter(Boolean);
+  if(!parts.length)throw new Error('无效路径');
+  for(const part of parts){
+    if(part==='.'||part==='..')throw new Error('无效路径：'+rel);
+    if(new Blob([part]).size>maxName)throw new Error('文件名过长：'+part+'（设备最多 '+maxName+' 字节）');
+  }
+}
+async function mkdirp(dir){
+  if(!dir||dir==='/')return;
+  const parts=dir.split('/').filter(Boolean);
+  let cur='';
+  for(const part of parts){
+    cur+='/'+part;
+    const r=await fetch(api('/api/mkdir',{path:cur}),{method:'POST'});
+    if(r.ok||r.status===409)continue;
+    const t=await r.text();
+    throw new Error(t||('无法创建目录 '+cur));
+  }
+}
+async function unpackAndUpload(file){
+  message('正在解压 '+file.name+'（浏览器本地，设备不解压）');
+  progress.hidden=false;
+  progress.value=0;
+  const unpacked=await unzip(await file.arrayBuffer());
+  if(!unpacked.length)throw new Error('压缩包里没有可写入的文件');
+  const spec=packDest(unpacked,file.name);
+  for(const item of spec.files)checkRel(item.name);
+  const need=spec.files.reduce((sum,item)=>sum+item.data.byteLength,0);
+  if(freeBytes!==null&&need>freeBytes){
+    throw new Error('存储空间不足：需要 '+size(need)+'，当前可用 '+size(freeBytes));
+  }
+  await mkdirp(spec.dest);
+  const dirs=new Set();
+  for(const item of spec.files){
+    const slash=item.name.lastIndexOf('/');
+    if(slash>0)dirs.add(join(spec.dest,item.name.slice(0,slash)));
+  }
+  for(const dir of [...dirs].sort())await mkdirp(dir);
+  for(let i=0;i<spec.files.length;i++){
+    const item=spec.files[i];
+    const blob=new Blob([item.data]);
+    progress.value=Math.round(i*100/spec.files.length);
+    message('正在上传 '+item.name+'（'+(i+1)+'/'+spec.files.length+'）');
+    await upload(blob,join(spec.dest,item.name));
+  }
+  path=spec.dest;
+  message((spec.app?'已安装应用 ':'已解压 ')+file.name+' → '+spec.dest+'（'+spec.files.length+' 个文件）');
+}
+async function handleFiles(fileList){
+  const files=[...fileList];
+  if(!files.length)return;
+  for(const file of files){
+    const n=new Blob([file.name]).size;
+    if(n>maxName){
+      throw new Error('文件名过长：'+n+' 字节，设备最多支持 '+maxName+' 字节（中文通常每字 3 字节）');
+    }
+  }
+  if(freeBytes!==null){
+    let budget=freeBytes;
+    for(const file of files){
+      if(isPack(file))continue;
+      const old=knownFiles.get(file.name)||0;
+      if(file.size>budget+old){
+        throw new Error('存储空间不足：'+file.name+' 需要 '+size(file.size)+'，当前可用 '+size(budget+old));
+      }
+      budget+=old-file.size;
+    }
+  }
+  progress.value=0;
+  progress.hidden=false;
+  for(const file of files){
+    if(isPack(file))await unpackAndUpload(file);
+    else await upload(file);
+  }
+}
+function bindInput(id){
+  document.getElementById(id).onchange=async e=>{
+    try{
+      await handleFiles(e.target.files);
+      await refresh();
+    }catch(err){
+      message(err.message,true);
+    }finally{
+      e.target.value='';
+      progress.hidden=true;
+    }
+  };
+}
+bindInput('files');
+bindInput('packs');
+refresh();
+</script>
+</body>
+</html>
